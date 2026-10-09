@@ -62,6 +62,11 @@ type CertificateRequestPolicyList struct {
 // CertificateRequestPolicySpec defines the desired state of
 // CertificateRequestPolicy.
 type CertificateRequestPolicySpec struct {
+	// policySetRef opts this policy into a CertificateRequestPolicySet. The
+	// policy is not evaluated independently when the set is absent or incomplete.
+	// +optional
+	PolicySetRef *CertificateRequestPolicySetReference `json:"policySetRef,omitempty"`
+
 	// allowed defines the allowed attributes for a CertificateRequest.
 	// A CertificateRequest can request _less_ than what is allowed,
 	// but _not more_, i.e. a CertificateRequest can request a subset of what

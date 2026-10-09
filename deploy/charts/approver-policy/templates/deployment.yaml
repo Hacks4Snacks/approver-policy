@@ -59,6 +59,7 @@ spec:
           - {{ . }}
           {{- end  }}
 
+          - --enable-policy-sets={{ .Values.app.enablePolicySets }}
           - --metrics-bind-address=:{{.Values.app.metrics.port}}
           - --readiness-probe-bind-address=:{{.Values.app.readinessProbe.port}}
 

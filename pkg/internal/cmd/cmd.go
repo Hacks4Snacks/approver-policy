@@ -114,9 +114,10 @@ func NewCommand(ctx context.Context) *cobra.Command {
 			}
 
 			if err := webhook.Register(ctx, webhook.Options{
-				Log:      opts.Logr,
-				Webhooks: registry.Shared.Webhooks(),
-				Manager:  mgr,
+				EnablePolicySets: opts.EnablePolicySets,
+				Log:              opts.Logr,
+				Webhooks:         registry.Shared.Webhooks(),
+				Manager:          mgr,
 			}); err != nil {
 				return fmt.Errorf("failed to register webhook: %w", err)
 			}
@@ -131,10 +132,11 @@ func NewCommand(ctx context.Context) *cobra.Command {
 			log.Info("all approvers ready...")
 
 			if err := controllers.AddControllers(ctx, controllers.Options{
-				Log:         opts.Logr.WithName("controller"),
-				Manager:     mgr,
-				Evaluators:  registry.Shared.Evaluators(),
-				Reconcilers: registry.Shared.Reconcilers(),
+				EnablePolicySets: opts.EnablePolicySets,
+				Log:              opts.Logr.WithName("controller"),
+				Manager:          mgr,
+				Evaluators:       registry.Shared.Evaluators(),
+				Reconcilers:      registry.Shared.Reconcilers(),
 				CertificateRequestMaxConcurrentReconciles:       opts.CertificateRequestMaxConcurrentReconciles,
 				CertificateRequestPolicyMaxConcurrentReconciles: opts.CertificateRequestPolicyMaxConcurrentReconciles,
 			}); err != nil {

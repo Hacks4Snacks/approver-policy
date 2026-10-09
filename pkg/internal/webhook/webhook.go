@@ -31,6 +31,9 @@ import (
 
 // Options are options for running the webhook.
 type Options struct {
+	// EnablePolicySets permits opt-in policy-set configuration.
+	EnablePolicySets bool
+
 	// Log is a shared logger for the shared webhook.
 	Log logr.Logger
 
@@ -58,6 +61,7 @@ func Register(_ context.Context, opts Options) error {
 
 	log.Info("registering webhook endpoints")
 	validator := &validator{
+		enablePolicySets:  opts.EnablePolicySets,
 		log:               log.WithName("validation"),
 		webhooks:          opts.Webhooks,
 		registeredPlugins: registerdPlugins,
@@ -68,6 +72,10 @@ func Register(_ context.Context, opts Options) error {
 		Complete()
 	if err != nil {
 		return fmt.Errorf("error registering webhook: %w", err)
+	}
+	if err := builder.WebhookManagedBy(opts.Manager, &policyapi.CertificateRequestPolicySet{}).
+		WithValidator(&policySetValidator{enabled: opts.EnablePolicySets}).Complete(); err != nil {
+		return fmt.Errorf("error registering policy-set webhook: %w", err)
 	}
 
 	if err := opts.Manager.AddReadyzCheck("validator", opts.Manager.GetWebhookServer().StartedChecker()); err != nil {

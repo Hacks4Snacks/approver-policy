@@ -37,13 +37,13 @@ import (
 type Predicate func(context.Context, *cmapi.CertificateRequest, []policyapi.CertificateRequestPolicy) ([]policyapi.CertificateRequestPolicy, error)
 
 // Ready is a Predicate that returns the subset of given policies that have a
-// Ready condition set to True.
+// Ready condition set to True for their current generation.
 func Ready(_ context.Context, _ *cmapi.CertificateRequest, policies []policyapi.CertificateRequestPolicy) ([]policyapi.CertificateRequestPolicy, error) {
 	var readyPolicies []policyapi.CertificateRequestPolicy
 
 	for _, policy := range policies {
 		for _, condition := range policy.Status.Conditions {
-			if condition.Type == policyapi.ConditionTypeReady && condition.Status == metav1.ConditionTrue {
+			if condition.Type == policyapi.ConditionTypeReady && condition.Status == metav1.ConditionTrue && condition.ObservedGeneration == policy.Generation {
 				readyPolicies = append(readyPolicies, policy)
 			}
 		}
@@ -171,6 +171,15 @@ func SelectorNamespace(reader client.Reader) Predicate {
 // CertificateRequestPolicies that have been RBAC bound to the user in the
 // CertificateRequest. Achieved using SubjectAccessReviews.
 func RBACBound(client client.Client) Predicate {
+	return rbacBound(client, "certificaterequestpolicies")
+}
+
+// RBACBoundPolicySets checks permission to use the sets represented by policies.
+func RBACBoundPolicySets(client client.Client) Predicate {
+	return rbacBound(client, "certificaterequestpolicysets")
+}
+
+func rbacBound(client client.Client, resource string) Predicate {
 	return func(ctx context.Context, cr *cmapi.CertificateRequest, policies []policyapi.CertificateRequestPolicy) ([]policyapi.CertificateRequestPolicy, error) {
 		extra := make(map[string]authzv1.ExtraValue)
 		for k, v := range cr.Spec.Extra {
@@ -189,7 +198,7 @@ func RBACBound(client client.Client) Predicate {
 
 					ResourceAttributes: &authzv1.ResourceAttributes{
 						Group:     "policy.cert-manager.io",
-						Resource:  "certificaterequestpolicies",
+						Resource:  resource,
 						Name:      policy.Name,
 						Namespace: cr.Namespace,
 						Verb:      "use",
@@ -198,6 +207,9 @@ func RBACBound(client client.Client) Predicate {
 			}
 			if err := client.Create(ctx, rev); err != nil {
 				return nil, fmt.Errorf("failed to create subjectaccessreview: %w", err)
+			}
+			if !rev.Status.Allowed && !rev.Status.Denied && rev.Status.EvaluationError != "" {
+				return nil, fmt.Errorf("subjectaccessreview could not determine access to %s %q: %s", resource, policy.Name, rev.Status.EvaluationError)
 			}
 
 			// If the user is bound to this policy then append.

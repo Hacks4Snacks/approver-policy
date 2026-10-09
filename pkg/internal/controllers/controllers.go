@@ -28,6 +28,9 @@ import (
 
 // Options hold options for the internal approver-policy controllers.
 type Options struct {
+	// EnablePolicySets enables opt-in policy-set evaluation and reconciliation.
+	EnablePolicySets bool
+
 	// Log is the shared logger used by controllers.
 	Log logr.Logger
 
@@ -69,6 +72,12 @@ func AddControllers(ctx context.Context, opts Options) error {
 
 	if err := addCertificateRequestPolicyController(ctx, opts); err != nil {
 		return fmt.Errorf("failed to add certificaterequestpolicy controller: %w", err)
+	}
+
+	if opts.EnablePolicySets {
+		if err := addCertificateRequestPolicySetController(ctx, opts); err != nil {
+			return fmt.Errorf("failed to add certificaterequestpolicyset controller: %w", err)
+		}
 	}
 
 	return nil

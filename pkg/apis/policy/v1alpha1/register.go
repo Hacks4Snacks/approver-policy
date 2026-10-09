@@ -67,6 +67,8 @@ func addKnownTypes(scheme *runtime.Scheme) error {
 	scheme.AddKnownTypes(SchemeGroupVersion,
 		&CertificateRequestPolicy{},
 		&CertificateRequestPolicyList{},
+		&CertificateRequestPolicySet{},
+		&CertificateRequestPolicySetList{},
 	)
 	metav1.AddToGroupVersion(scheme, SchemeGroupVersion)
 	return nil

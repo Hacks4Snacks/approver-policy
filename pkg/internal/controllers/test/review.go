@@ -18,11 +18,13 @@ package test
 
 import (
 	"context"
+	"time"
 
 	cmapi "github.com/cert-manager/cert-manager/pkg/apis/certmanager/v1"
 	cmmeta "github.com/cert-manager/cert-manager/pkg/apis/meta/v1"
 	"github.com/cert-manager/cert-manager/test/unit/gen"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/envtest/komega"
@@ -63,6 +65,121 @@ var _ = Context("Review", func() {
 	JustAfterEach(func() {
 		cancel()
 	})
+
+	DescribeTable("policy sets", func(setFirst bool) {
+		setName := namespace.Name
+		allowName, denyName := setName+"-allow", setName+"-deny"
+		replacementName := setName + "-replacement"
+		policySet := &policyapi.CertificateRequestPolicySet{
+			ObjectMeta: metav1.ObjectMeta{Name: setName},
+			Spec: policyapi.CertificateRequestPolicySetSpec{
+				Policies: []policyapi.CertificateRequestPolicyReference{{Name: allowName}, {Name: denyName}},
+				Selector: &policyapi.CertificateRequestPolicySelector{
+					Namespace: &policyapi.CertificateRequestPolicySelectorNamespace{MatchNames: []string{namespace.Name}},
+				},
+			},
+		}
+		newPolicy := func(name, dnsName string) *policyapi.CertificateRequestPolicy {
+			return &policyapi.CertificateRequestPolicy{
+				ObjectMeta: metav1.ObjectMeta{Name: name},
+				Spec: policyapi.CertificateRequestPolicySpec{
+					PolicySetRef: &policyapi.CertificateRequestPolicySetReference{Name: setName},
+					Selector:     policyapi.CertificateRequestPolicySelector{IssuerRef: &policyapi.CertificateRequestPolicySelectorIssuerRef{}},
+					Allowed:      &policyapi.CertificateRequestPolicyAllowed{DNSNames: &policyapi.CertificateRequestPolicyAllowedStringSlice{Values: &[]string{dnsName}}},
+				},
+			}
+		}
+		waitForSet := func(status metav1.ConditionStatus, reason string) {
+			Eventually(func() bool {
+				var current policyapi.CertificateRequestPolicySet
+				if err := env.AdminClient.Get(ctx, client.ObjectKey{Name: setName}, &current); err != nil || current.Status == nil {
+					return false
+				}
+				condition := meta.FindStatusCondition(current.Status.Conditions, policyapi.ConditionTypeReady)
+				return condition != nil && condition.Status == status && condition.Reason == reason && condition.ObservedGeneration == current.Generation
+			}).WithTimeout(10 * time.Second).WithPolling(10 * time.Millisecond).Should(BeTrue())
+		}
+		Expect(env.AdminClient.Create(ctx, newPolicy(denyName, "other.example.com"))).To(Succeed())
+		waitForReady(ctx, env.AdminClient, denyName)
+		if setFirst {
+			Expect(env.AdminClient.Create(ctx, policySet)).To(Succeed())
+			waitForSet(metav1.ConditionFalse, "PolicyMissing")
+		} else {
+			Expect(env.AdminClient.Create(ctx, newPolicy(allowName, "example.com"))).To(Succeed())
+			waitForReady(ctx, env.AdminClient, allowName)
+		}
+		createRole := bindUserToCreateCertificateRequest(ctx, env.AdminClient, namespace.Name)
+		policyRole := bindUserToUseCertificateRequestPolicies(ctx, env.AdminClient, namespace.Name, allowName, denyName, replacementName)
+		setRole := bindUserToUsePolicyResources(ctx, env.AdminClient, namespace.Name, "certificaterequestpolicysets", setName)
+		requestName := createCertificateRequest(ctx, env.UserClient, namespace.Name,
+			gen.SetCSRDNSNames("example.com"),
+			gen.SetCertificateRequestIssuer(cmmeta.IssuerReference{Name: "issuer", Kind: "Issuer", Group: "cert-manager.io"}),
+		)
+		waitForNoApproveOrDeny(ctx, env.AdminClient, namespace.Name, requestName)
+		if setFirst {
+			Expect(env.AdminClient.Create(ctx, newPolicy(allowName, "example.com"))).To(Succeed())
+		} else {
+			Expect(env.AdminClient.Create(ctx, policySet)).To(Succeed())
+		}
+		waitForSet(metav1.ConditionTrue, "Ready")
+		waitForApproval(ctx, env.AdminClient, namespace.Name, requestName)
+		Expect(env.AdminClient.Delete(ctx, newPolicy(allowName, "example.com"))).To(Succeed())
+		waitForSet(metav1.ConditionFalse, "PolicyMissing")
+		if setFirst {
+			newRequest := func(dnsName string) string {
+				return createCertificateRequest(ctx, env.UserClient, namespace.Name,
+					gen.SetCSRDNSNames(dnsName),
+					gen.SetCertificateRequestIssuer(cmmeta.IssuerReference{Name: "issuer", Kind: "Issuer", Group: "cert-manager.io"}),
+				)
+			}
+			By("Recovering a pending request when a deleted member is recreated")
+			pendingRequest := newRequest("example.com")
+			waitForNoApproveOrDeny(ctx, env.AdminClient, namespace.Name, pendingRequest)
+			Expect(env.AdminClient.Create(ctx, newPolicy(allowName, "example.com"))).To(Succeed())
+			waitForSet(metav1.ConditionTrue, "Ready")
+			waitForApproval(ctx, env.AdminClient, namespace.Name, pendingRequest)
+
+			By("Keeping the set incomplete until a newly declared member arrives")
+			Expect(env.AdminClient.Get(ctx, client.ObjectKey{Name: setName}, policySet)).To(Succeed())
+			policySet.Spec.Policies = append(policySet.Spec.Policies, policyapi.CertificateRequestPolicyReference{Name: replacementName})
+			Expect(env.AdminClient.Update(ctx, policySet)).To(Succeed())
+			waitForSet(metav1.ConditionFalse, "PolicyMissing")
+			pendingRequest = newRequest("example.com")
+			waitForNoApproveOrDeny(ctx, env.AdminClient, namespace.Name, pendingRequest)
+			Expect(env.AdminClient.Create(ctx, newPolicy(replacementName, "replacement.example.com"))).To(Succeed())
+			waitForSet(metav1.ConditionTrue, "Ready")
+			waitForApproval(ctx, env.AdminClient, namespace.Name, pendingRequest)
+
+			By("Not evaluating a member removed from the declared list")
+			Expect(env.AdminClient.Get(ctx, client.ObjectKey{Name: setName}, policySet)).To(Succeed())
+			policySet.Spec.Policies = []policyapi.CertificateRequestPolicyReference{{Name: denyName}, {Name: replacementName}}
+			Expect(env.AdminClient.Update(ctx, policySet)).To(Succeed())
+			waitForSet(metav1.ConditionTrue, "Ready")
+			deniedRequest := newRequest("example.com")
+			waitForDenial(ctx, env.AdminClient, namespace.Name, deniedRequest)
+
+			By("Recreating a set by name without standalone fallback")
+			Expect(env.AdminClient.Get(ctx, client.ObjectKey{Name: setName}, policySet)).To(Succeed())
+			oldUID := policySet.UID
+			recreated := &policyapi.CertificateRequestPolicySet{ObjectMeta: metav1.ObjectMeta{Name: setName}, Spec: policySet.Spec}
+			policySet.Spec.Policies = append(policySet.Spec.Policies, policyapi.CertificateRequestPolicyReference{Name: setName + "-missing"})
+			Expect(env.AdminClient.Update(ctx, policySet)).To(Succeed())
+			waitForSet(metav1.ConditionFalse, "PolicyMissing")
+			Expect(env.AdminClient.Delete(ctx, policySet)).To(Succeed())
+			pendingRequest = newRequest("replacement.example.com")
+			waitForNoApproveOrDeny(ctx, env.AdminClient, namespace.Name, pendingRequest)
+			Expect(env.AdminClient.Create(ctx, recreated)).To(Succeed())
+			Expect(recreated.UID).NotTo(Equal(oldUID))
+			waitForSet(metav1.ConditionTrue, "Ready")
+			waitForApproval(ctx, env.AdminClient, namespace.Name, pendingRequest)
+			waitForApproval(ctx, env.AdminClient, namespace.Name, requestName)
+			waitForDenial(ctx, env.AdminClient, namespace.Name, deniedRequest)
+		}
+		deleteRoleAndRoleBindings(ctx, namespace.Name, createRole, policyRole, setRole)
+	},
+		Entry("member arrival wakes an undecided request", true),
+		Entry("set arrival wakes an undecided request", false),
+	)
 
 	It("if a policy approves the request, the CertificateRequest should be approved", func() {
 		plugin.FakeReconciler = fake.NewFakeReconciler().WithReady(func(_ context.Context, policy *policyapi.CertificateRequestPolicy) (approver.ReconcilerReadyResponse, error) {

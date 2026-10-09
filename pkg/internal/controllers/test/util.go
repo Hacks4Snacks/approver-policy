@@ -202,6 +202,7 @@ func startControllers(registry *registry.Registry) (context.Context, func(), cor
 				env.AdminClient.DeleteAllOf(ctx, new(policyapi.CertificateRequestPolicy)),
 			),
 		).To(Succeed())
+		Expect(env.AdminClient.DeleteAllOf(ctx, new(policyapi.CertificateRequestPolicySet))).To(Succeed())
 	}
 
 	mgr, err := ctrl.NewManager(env.Config, ctrl.Options{
@@ -226,10 +227,11 @@ func startControllers(registry *registry.Registry) (context.Context, func(), cor
 	Expect(err).NotTo(HaveOccurred())
 
 	Expect(controllers.AddControllers(ctx, controllers.Options{
-		Log:         log.WithName("controllers"),
-		Manager:     mgr,
-		Evaluators:  registry.Evaluators(),
-		Reconcilers: registry.Reconcilers(),
+		EnablePolicySets: true,
+		Log:              log.WithName("controllers"),
+		Manager:          mgr,
+		Evaluators:       registry.Evaluators(),
+		Reconcilers:      registry.Reconcilers(),
 	})).NotTo(HaveOccurred())
 
 	By("Running Policy controller")
@@ -249,6 +251,10 @@ func startControllers(registry *registry.Registry) (context.Context, func(), cor
 // given Namespace. The name of the Role and RoleBinding is returned, which
 // should be deleted after the test has completed by the consumer.
 func bindUserToUseCertificateRequestPolicies(ctx context.Context, cl client.Client, ns string, policyNames ...string) string {
+	return bindUserToUsePolicyResources(ctx, cl, ns, "certificaterequestpolicies", policyNames...)
+}
+
+func bindUserToUsePolicyResources(ctx context.Context, cl client.Client, ns, resource string, policyNames ...string) string {
 	role := rbacv1.Role{
 		ObjectMeta: metav1.ObjectMeta{
 			GenerateName: "test-policy-use-",
@@ -257,7 +263,7 @@ func bindUserToUseCertificateRequestPolicies(ctx context.Context, cl client.Clie
 		Rules: []rbacv1.PolicyRule{
 			{
 				APIGroups:     []string{"policy.cert-manager.io"},
-				Resources:     []string{"certificaterequestpolicies"},
+				Resources:     []string{resource},
 				Verbs:         []string{"use"},
 				ResourceNames: policyNames,
 			},

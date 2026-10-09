@@ -19,22 +19,24 @@ package webhook
 import (
 	"context"
 	"errors"
+	"reflect"
 	"slices"
 	"sort"
 
 	"github.com/go-logr/logr"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	utilerrors "k8s.io/apimachinery/pkg/util/errors"
 	"k8s.io/apimachinery/pkg/util/validation/field"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
 	policyapi "github.com/cert-manager/approver-policy/pkg/apis/policy/v1alpha1"
 	"github.com/cert-manager/approver-policy/pkg/approver"
+	"github.com/cert-manager/approver-policy/pkg/internal/util"
 )
 
 // validator validates against policy.cert-manager.io resources.
 type validator struct {
-	log logr.Logger
+	log              logr.Logger
+	enablePolicySets bool
 
 	registeredPlugins []string
 	webhooks          []approver.Webhook
@@ -43,10 +45,16 @@ type validator struct {
 var _ admission.Validator[*policyapi.CertificateRequestPolicy] = &validator{}
 
 func (v *validator) ValidateCreate(ctx context.Context, obj *policyapi.CertificateRequestPolicy) (admission.Warnings, error) {
+	if !v.enablePolicySets && obj.Spec.PolicySetRef != nil {
+		return nil, field.Forbidden(field.NewPath("spec", "policySetRef"), "policy sets are disabled")
+	}
 	return v.validate(ctx, obj)
 }
 
-func (v *validator) ValidateUpdate(ctx context.Context, _, newObj *policyapi.CertificateRequestPolicy) (admission.Warnings, error) {
+func (v *validator) ValidateUpdate(ctx context.Context, oldObj, newObj *policyapi.CertificateRequestPolicy) (admission.Warnings, error) {
+	if !v.enablePolicySets && newObj.Spec.PolicySetRef != nil && !reflect.DeepEqual(oldObj.Spec.PolicySetRef, newObj.Spec.PolicySetRef) {
+		return nil, field.Forbidden(field.NewPath("spec", "policySetRef"), "policy sets are disabled")
+	}
 	return v.validate(ctx, newObj)
 }
 
@@ -80,15 +88,7 @@ func (v *validator) validate(ctx context.Context, policy *policyapi.CertificateR
 		}
 	}
 
-	if policy.Spec.Selector.IssuerRef == nil && policy.Spec.Selector.Namespace == nil {
-		fieldErrs = append(fieldErrs, field.Required(fldPath.Child("selector"), "one of issuerRef or namespace must be defined, hint: `{}` on either matches everything"))
-	}
-
-	if nsSel := policy.Spec.Selector.Namespace; nsSel != nil && len(nsSel.MatchLabels) > 0 {
-		if _, err := metav1.LabelSelectorAsSelector(&metav1.LabelSelector{MatchLabels: nsSel.MatchLabels}); err != nil {
-			fieldErrs = append(fieldErrs, field.Invalid(fldPath.Child("selector", "namespace", "matchLabels"), nsSel.MatchLabels, err.Error()))
-		}
-	}
+	fieldErrs = append(fieldErrs, util.ValidatePolicySelector(&policy.Spec.Selector, fldPath.Child("selector"))...)
 
 	allAllowed := true
 	for _, webhook := range v.webhooks {
@@ -118,4 +118,28 @@ func (v *validator) validate(ctx context.Context, policy *policyapi.CertificateR
 	}
 
 	return warnings, utilerrors.NewAggregate(errs)
+}
+
+type policySetValidator struct {
+	enabled bool
+}
+
+var _ admission.Validator[*policyapi.CertificateRequestPolicySet] = &policySetValidator{}
+
+func (validator *policySetValidator) ValidateCreate(_ context.Context, policySet *policyapi.CertificateRequestPolicySet) (admission.Warnings, error) {
+	if !validator.enabled {
+		return nil, field.Forbidden(field.NewPath("spec"), "policy sets are disabled")
+	}
+	return nil, util.ValidatePolicySelector(policySet.Spec.Selector, field.NewPath("spec", "selector")).ToAggregate()
+}
+
+func (validator *policySetValidator) ValidateUpdate(ctx context.Context, oldSet, newSet *policyapi.CertificateRequestPolicySet) (admission.Warnings, error) {
+	if !validator.enabled && reflect.DeepEqual(oldSet.Spec, newSet.Spec) {
+		return nil, nil
+	}
+	return validator.ValidateCreate(ctx, newSet)
+}
+
+func (validator *policySetValidator) ValidateDelete(_ context.Context, _ *policyapi.CertificateRequestPolicySet) (admission.Warnings, error) {
+	return nil, nil
 }

@@ -13,6 +13,16 @@ rules:
   resources: ["certificaterequestpolicies/status"]
   verbs: ["patch"]
 
+{{- if .Values.app.enablePolicySets }}
+- apiGroups: ["policy.cert-manager.io"]
+  resources: ["certificaterequestpolicysets"]
+  verbs: ["list", "watch"]
+
+- apiGroups: ["policy.cert-manager.io"]
+  resources: ["certificaterequestpolicysets/status"]
+  verbs: ["patch"]
+{{- end }}
+
 - apiGroups: ["cert-manager.io"]
   resources: ["certificaterequests"]
   verbs: ["list", "watch"]

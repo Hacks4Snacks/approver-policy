@@ -141,7 +141,7 @@ func addCertificateRequestPolicyController(_ context.Context, opts Options) erro
 func (c *certificaterequestpolicies) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	result, patch, resultErr := c.reconcileStatusPatch(ctx, req)
 	if patch != nil {
-		crp, patch, err := ssa_client.GenerateCertificateRequestPolicyStatusPatch(req.Name, patch)
+		crp, patch, err := ssa_client.GenerateCertificateRequestPolicyStatusPatch(patch, &patch.Status)
 		if err != nil {
 			err = fmt.Errorf("failed to generate CertificateRequestPolicy.Status patch: %w", err)
 			return ctrl.Result{}, utilerrors.NewAggregate([]error{resultErr, err})
@@ -161,7 +161,7 @@ func (c *certificaterequestpolicies) Reconcile(ctx context.Context, req ctrl.Req
 	return result, resultErr
 }
 
-func (c *certificaterequestpolicies) reconcileStatusPatch(ctx context.Context, req ctrl.Request) (ctrl.Result, *policyapi.CertificateRequestPolicyStatus, error) {
+func (c *certificaterequestpolicies) reconcileStatusPatch(ctx context.Context, req ctrl.Request) (ctrl.Result, *policyapi.CertificateRequestPolicy, error) {
 	log := c.log.WithValues("name", req.NamespacedName.Name)
 	log.V(2).Info("syncing")
 
@@ -203,7 +203,9 @@ func (c *certificaterequestpolicies) reconcileStatusPatch(ctx context.Context, r
 
 	log = log.WithValues("ready", ready)
 
-	policyPatch := &policyapi.CertificateRequestPolicyStatus{}
+	policyPatch := &policyapi.CertificateRequestPolicy{
+		ObjectMeta: metav1.ObjectMeta{Name: policy.Name, UID: policy.UID, ResourceVersion: policy.ResourceVersion},
+	}
 
 	if !ready {
 		log.V(2).Info("NOT ready for approval evaluation", "errors", el.ToAggregate())
@@ -213,7 +215,7 @@ func (c *certificaterequestpolicies) reconcileStatusPatch(ctx context.Context, r
 
 		c.setCondition(
 			policy.Status.Conditions,
-			&policyPatch.Conditions,
+			&policyPatch.Status.Conditions,
 			policy.Generation,
 			metav1.Condition{
 				Type:    policyapi.ConditionTypeReady,
@@ -233,7 +235,7 @@ func (c *certificaterequestpolicies) reconcileStatusPatch(ctx context.Context, r
 
 	c.setCondition(
 		policy.Status.Conditions,
-		&policyPatch.Conditions,
+		&policyPatch.Status.Conditions,
 		policy.Generation,
 		metav1.Condition{
 			Type:    policyapi.ConditionTypeReady,

@@ -75,13 +75,16 @@ type certificaterequests struct {
 
 // addCertificateRequestController will register the certificaterequests
 // controller with the controller-runtime Manager.
-func addCertificateRequestController(_ context.Context, opts Options) error {
+func addCertificateRequestController(ctx context.Context, opts Options) error {
+	if _, err := opts.Manager.GetCache().GetInformer(ctx, &cmapi.CertificateRequest{}); err != nil {
+		return fmt.Errorf("failed to register CertificateRequest informer: %w", err)
+	}
 	c := &certificaterequests{
 		log:      opts.Log.WithName("certificaterequests"),
 		clock:    clock.RealClock{},
 		recorder: opts.Manager.GetEventRecorder("policy.cert-manager.io"),
 		client:   opts.Manager.GetClient(),
-		manager:  internalmanager.New(opts.Manager.GetClient(), opts.Evaluators),
+		manager:  internalmanager.New(opts.Manager.GetClient(), opts.Evaluators, opts.EnablePolicySets),
 	}
 
 	enqueueRequestFromMapFunc := func(ctx context.Context, obj client.Object) []reconcile.Request {
@@ -128,7 +131,7 @@ func addCertificateRequestController(_ context.Context, opts Options) error {
 		},
 	})
 
-	return ctrl.NewControllerManagedBy(opts.Manager).
+	controllerBuilder := ctrl.NewControllerManagedBy(opts.Manager).
 		WithOptions(controller.Options{MaxConcurrentReconciles: opts.CertificateRequestMaxConcurrentReconciles}).
 		For(&cmapi.CertificateRequest{}, builder.WithPredicates(
 			// Only process CertificateRequests which have not yet got an approval
@@ -154,10 +157,21 @@ func addCertificateRequestController(_ context.Context, opts Options) error {
 		WatchesMetadata(&rbacv1.RoleBinding{}, handler.EnqueueRequestsFromMapFunc(enqueueRequestFromMapFunc), onlyNonInitialCreateEvents).
 		WatchesMetadata(&rbacv1.ClusterRole{}, handler.EnqueueRequestsFromMapFunc(enqueueRequestFromMapFunc), onlyNonInitialCreateEvents).
 		WatchesMetadata(&rbacv1.ClusterRoleBinding{}, handler.EnqueueRequestsFromMapFunc(enqueueRequestFromMapFunc), onlyNonInitialCreateEvents).
-		WatchesMetadata(&corev1.Namespace{}, handler.EnqueueRequestsFromMapFunc(enqueueRequestFromMapFunc), onlyNonInitialCreateEvents).
+		WatchesMetadata(&corev1.Namespace{}, handler.EnqueueRequestsFromMapFunc(enqueueRequestFromMapFunc), onlyNonInitialCreateEvents)
 
-		// Complete the controller builder.
-		Complete(c)
+	if opts.EnablePolicySets {
+		controllerBuilder.Watches(&policyapi.CertificateRequestPolicySet{}, handler.EnqueueRequestsFromMapFunc(enqueueRequestFromMapFunc),
+			onlyNonInitialCreateEvents, builder.WithPredicates(policySetChangePredicate()))
+	}
+	return controllerBuilder.Complete(c)
+}
+
+func policySetChangePredicate() predicate.Predicate {
+	return predicate.Funcs{UpdateFunc: func(change event.UpdateEvent) bool {
+		return change.ObjectOld.GetGeneration() != change.ObjectNew.GetGeneration() ||
+			change.ObjectOld.GetUID() != change.ObjectNew.GetUID() ||
+			!change.ObjectOld.GetDeletionTimestamp().Equal(change.ObjectNew.GetDeletionTimestamp())
+	}}
 }
 
 // Reconcile is the top level function for reconciling over synced
@@ -250,10 +264,10 @@ func (c *certificaterequests) reconcileStatusPatch(ctx context.Context, req ctrl
 		return ctrl.Result{}, crPatch, nil
 
 	case manager.ResultUnprocessed:
-		log.V(2).Info("request was unprocessed")
-		c.recorder.Eventf(cr, nil, corev1.EventTypeNormal, "Unprocessed", "Synced", "Request is not applicable for any policy so ignoring")
+		log.V(2).Info("request was unprocessed", "message", response.Message)
+		c.recorder.Eventf(cr, nil, corev1.EventTypeNormal, "Unprocessed", "Synced", "No approval decision is available; waiting for applicable policies or policy sets")
 
-		return ctrl.Result{}, nil, nil
+		return ctrl.Result{RequeueAfter: response.RequeueAfter}, nil, nil
 
 	default:
 		log.Error(errors.New(response.Message), "manager responded with an unknown result", "result", response.Result)

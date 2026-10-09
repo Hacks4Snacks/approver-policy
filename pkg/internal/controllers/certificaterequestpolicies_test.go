@@ -19,9 +19,11 @@ package controllers
 import (
 	"context"
 	"errors"
+	"path/filepath"
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
 	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -31,12 +33,133 @@ import (
 	"k8s.io/klog/v2/ktesting"
 	fakeclock "k8s.io/utils/clock/testing"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	fakeclient "sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	policyapi "github.com/cert-manager/approver-policy/pkg/apis/policy/v1alpha1"
 	"github.com/cert-manager/approver-policy/pkg/approver"
 	fakeapprover "github.com/cert-manager/approver-policy/pkg/approver/fake"
+	"github.com/cert-manager/approver-policy/pkg/internal/controllers/ssa_client"
+	"github.com/cert-manager/approver-policy/pkg/internal/util"
+	testenv "github.com/cert-manager/approver-policy/test/env"
 )
+
+func TestPolicyReadinessStatusPreconditions(t *testing.T) {
+	environment := testenv.RunControlPlane(t, t.Context(), testenv.GetenvOrFail(t, "CERT_MANAGER_CRDS"),
+		filepath.Join("..", "..", "..", "deploy", "crds"))
+	for _, change := range []string{"unchanged", "updated", "replaced"} {
+		t.Run(change, func(t *testing.T) {
+			original := &policyapi.CertificateRequestPolicy{
+				ObjectMeta: metav1.ObjectMeta{Name: "readiness-" + change},
+				Spec: policyapi.CertificateRequestPolicySpec{
+					PolicySetRef: &policyapi.CertificateRequestPolicySetReference{Name: "services"},
+					Selector:     policyapi.CertificateRequestPolicySelector{IssuerRef: &policyapi.CertificateRequestPolicySelectorIssuerRef{}},
+				},
+			}
+			require.NoError(t, environment.AdminClient.Create(t.Context(), original))
+			changed := false
+			controller := &certificaterequestpolicies{
+				client: environment.AdminClient, clock: fakeclock.NewFakeClock(time.Now()),
+				log: ktesting.NewLogger(t, ktesting.DefaultConfig), recorder: events.NewFakeRecorder(4),
+				reconcilers: []approver.Reconciler{fakeapprover.NewFakeReconciler().WithReady(func(ctx context.Context, observed *policyapi.CertificateRequestPolicy) (approver.ReconcilerReadyResponse, error) {
+					if !changed && change != "unchanged" {
+						changed = true
+						updated := observed.DeepCopy()
+						issuerName := "different-issuer"
+						updated.Spec.Selector.IssuerRef.Name = &issuerName
+						if change == "replaced" {
+							require.NoError(t, environment.AdminClient.Delete(ctx, observed))
+							updated.ObjectMeta = metav1.ObjectMeta{Name: observed.Name}
+							updated.Status = policyapi.CertificateRequestPolicyStatus{}
+							require.NoError(t, environment.AdminClient.Create(ctx, updated))
+						} else {
+							require.NoError(t, environment.AdminClient.Update(ctx, updated))
+						}
+					}
+					return approver.ReconcilerReadyResponse{Ready: true}, nil
+				})},
+			}
+			request := ctrl.Request{NamespacedName: client.ObjectKeyFromObject(original)}
+			_, err := controller.Reconcile(t.Context(), request)
+			var current policyapi.CertificateRequestPolicy
+			require.NoError(t, environment.AdminClient.Get(t.Context(), request.NamespacedName, &current))
+			policySet := &policyapi.CertificateRequestPolicySet{
+				ObjectMeta: metav1.ObjectMeta{Name: "services"},
+				Spec: policyapi.CertificateRequestPolicySetSpec{
+					Policies: []policyapi.CertificateRequestPolicyReference{{Name: current.Name}},
+					Selector: &policyapi.CertificateRequestPolicySelector{IssuerRef: &policyapi.CertificateRequestPolicySelectorIssuerRef{}},
+				},
+			}
+			if change != "unchanged" {
+				require.Error(t, err)
+				require.Empty(t, current.Status.Conditions)
+				if change == "replaced" {
+					require.NotEqual(t, original.UID, current.UID)
+					require.Equal(t, original.Generation, current.Generation)
+				} else {
+					require.Equal(t, original.UID, current.UID)
+					require.Greater(t, current.Generation, original.Generation)
+				}
+				status, _, _ := util.PolicySetReadiness(policySet, map[string]policyapi.CertificateRequestPolicy{current.Name: current})
+				require.Equal(t, metav1.ConditionFalse, status)
+				_, err = controller.Reconcile(t.Context(), request)
+				require.NoError(t, environment.AdminClient.Get(t.Context(), request.NamespacedName, &current))
+			}
+			require.NoError(t, err)
+			status, _, _ := util.PolicySetReadiness(policySet, map[string]policyapi.CertificateRequestPolicy{current.Name: current})
+			require.Equal(t, metav1.ConditionTrue, status)
+		})
+	}
+}
+
+func TestPolicySetReadinessStatusPreconditions(t *testing.T) {
+	environment := testenv.RunControlPlane(t, t.Context(), testenv.GetenvOrFail(t, "CERT_MANAGER_CRDS"),
+		filepath.Join("..", "..", "..", "deploy", "crds"))
+	for _, change := range []string{"unchanged", "updated", "replaced"} {
+		t.Run(change, func(t *testing.T) {
+			original := &policyapi.CertificateRequestPolicySet{
+				ObjectMeta: metav1.ObjectMeta{Name: "readiness-" + change},
+				Spec: policyapi.CertificateRequestPolicySetSpec{
+					Policies: []policyapi.CertificateRequestPolicyReference{{Name: "member"}},
+					Selector: &policyapi.CertificateRequestPolicySelector{IssuerRef: &policyapi.CertificateRequestPolicySelectorIssuerRef{}},
+				},
+			}
+			require.NoError(t, environment.AdminClient.Create(t.Context(), original))
+			status := &policyapi.CertificateRequestPolicySetStatus{Conditions: []metav1.Condition{{
+				Type: policyapi.ConditionTypeReady, Status: metav1.ConditionTrue, ObservedGeneration: original.Generation,
+				Reason: "Ready", Message: "All members are ready", LastTransitionTime: metav1.NewTime(time.Now().Truncate(time.Second)),
+			}}}
+			object, patch, err := ssa_client.GenerateCertificateRequestPolicySetStatusPatch(original, status)
+			require.NoError(t, err)
+			current := original.DeepCopy()
+			if change != "unchanged" {
+				current.Spec.Policies = append(current.Spec.Policies, policyapi.CertificateRequestPolicyReference{Name: "new-member"})
+				if change == "replaced" {
+					require.NoError(t, environment.AdminClient.Delete(t.Context(), original))
+					current.ObjectMeta = metav1.ObjectMeta{Name: original.Name}
+					require.NoError(t, environment.AdminClient.Create(t.Context(), current))
+					require.NotEqual(t, original.UID, current.UID)
+					require.Equal(t, original.Generation, current.Generation)
+				} else {
+					require.NoError(t, environment.AdminClient.Update(t.Context(), current))
+				}
+			}
+			err = environment.AdminClient.Status().Patch(t.Context(), object, patch, client.FieldOwner("approver-policy"), client.ForceOwnership)
+			if change != "unchanged" {
+				require.Error(t, err)
+				require.NoError(t, environment.AdminClient.Get(t.Context(), client.ObjectKeyFromObject(current), current))
+				require.Nil(t, current.Status)
+				status.Conditions[0].ObservedGeneration = current.Generation
+				object, patch, err = ssa_client.GenerateCertificateRequestPolicySetStatusPatch(current, status)
+				require.NoError(t, err)
+				err = environment.AdminClient.Status().Patch(t.Context(), object, patch, client.FieldOwner("approver-policy"), client.ForceOwnership)
+			}
+			require.NoError(t, err)
+			require.NoError(t, environment.AdminClient.Get(t.Context(), client.ObjectKeyFromObject(current), current))
+			require.Equal(t, status, current.Status)
+		})
+	}
+}
 
 func Test_certificaterequestpolicies_Reconcile(t *testing.T) {
 	const (
@@ -423,7 +546,11 @@ func Test_certificaterequestpolicies_Reconcile(t *testing.T) {
 				reconcilers: test.reconcilers,
 			}
 
-			resp, statusPatch, err := c.reconcileStatusPatch(t.Context(), ctrl.Request{NamespacedName: types.NamespacedName{Name: policyName}})
+			resp, policyPatch, err := c.reconcileStatusPatch(t.Context(), ctrl.Request{NamespacedName: types.NamespacedName{Name: policyName}})
+			var statusPatch *policyapi.CertificateRequestPolicyStatus
+			if policyPatch != nil {
+				statusPatch = &policyPatch.Status
+			}
 			if (err != nil) != test.expError {
 				t.Errorf("unexpected error, exp=%t got=%v", test.expError, err)
 			}

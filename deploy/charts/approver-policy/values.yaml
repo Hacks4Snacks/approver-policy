@@ -12,7 +12,7 @@ crds:
   # annotation is added to the CRD. This will prevent Helm from uninstalling
   # the CRD when the Helm release is uninstalled.
   # WARNING: when the CRDs are removed, all cert-manager-approver-policy custom resources
-  # (CertificateRequestPolicy) will be removed too by the garbage collector.
+  # (CertificateRequestPolicy and CertificateRequestPolicySet) will be removed too by the garbage collector.
   keep: true
 
 # Number of replicas of approver-policy to run.
@@ -89,6 +89,10 @@ image:
 imagePullSecrets: []
 
 app:
+  # Enable experimental policy-set evaluation and reconciliation.
+  # Disabled by default. Policies with policySetRef remain inactive when disabled.
+  enablePolicySets: false
+
   # The format of approver-policy logging. Accepted values are text or json.
   logFormat: text
   # Verbosity of approver-policy logging. This is a value from 1 to 5.

@@ -18,11 +18,13 @@ package manager
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
 
 	cmapi "github.com/cert-manager/cert-manager/pkg/apis/certmanager/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	policyapi "github.com/cert-manager/approver-policy/pkg/apis/policy/v1alpha1"
@@ -37,10 +39,12 @@ var _ manager.Interface = &mngr{}
 // filtering CertificiateRequestPolicies based on predicates, and evaluating
 // CertificateRequests using the registered evaluators.
 type mngr struct {
-	reader         client.Reader
-	readyPredicate predicate.Predicate
-	predicates     []predicate.Predicate
-	evaluators     []approver.Evaluator
+	enablePolicySets bool
+	reader           client.Reader
+	readyPredicate   predicate.Predicate
+	predicates       []predicate.Predicate
+	setPredicates    []predicate.Predicate
+	evaluators       []approver.Evaluator
 }
 
 // policyMessage holds the name of the CertificateRequestPolicy and aggregated
@@ -65,14 +69,20 @@ type policyMessage struct {
 // IssuerRef
 //   - CertificateRequestPolicy is bound to the user that appears in the
 //     CertificateRequest
-func New(client client.Client, evaluators []approver.Evaluator) manager.Interface {
+func New(client client.Client, evaluators []approver.Evaluator, enablePolicySets bool) manager.Interface {
 	return &mngr{
-		reader:         client,
-		readyPredicate: predicate.Ready,
+		enablePolicySets: enablePolicySets,
+		reader:           client,
+		readyPredicate:   predicate.Ready,
 		predicates: []predicate.Predicate{
 			predicate.SelectorIssuerRef,
 			predicate.SelectorNamespace(client),
 			predicate.RBACBound(client),
+		},
+		setPredicates: []predicate.Predicate{
+			predicate.SelectorIssuerRef,
+			predicate.RBACBoundPolicySets(client),
+			predicate.SelectorNamespace(client),
 		},
 		evaluators: evaluators,
 	}
@@ -95,20 +105,32 @@ func (m *mngr) Review(ctx context.Context, cr *cmapi.CertificateRequest) (manage
 	}
 
 	var (
-		policies = policyList.Items
-		err      error
+		policies       []policyapi.CertificateRequestPolicy
+		matchingErrors []error
+		err            error
 	)
 
 	// Run matching predicates (issuer ref, namespace, RBAC).
-	for _, pred := range m.predicates {
-		policies, err = pred(ctx, cr, policies)
-		if err != nil {
-			return manager.ReviewResponse{}, fmt.Errorf("failed to perform predicate on policies: %w", err)
+	for _, policy := range policyList.Items {
+		matching := []policyapi.CertificateRequestPolicy{policy}
+		for _, pred := range m.predicates {
+			matching, err = pred(ctx, cr, matching)
+			if err != nil {
+				matchingErrors = append(matchingErrors, fmt.Errorf("failed to match policy %q: %w", policy.Name, err))
+				matching = nil
+			}
+			if len(matching) == 0 {
+				break
+			}
 		}
+		policies = append(policies, matching...)
 	}
 
-	// Check for matching policies that haven't been reconciled yet (no Ready
-	// condition). Used below to defer terminal deny decisions during startup.
+	policies, pendingSets, setErr := m.policySetMembers(ctx, cr, policies, policyList.Items)
+	reviewErr := errors.Join(append(matchingErrors, setErr)...)
+
+	// Check for matching policies without a definitive Ready condition for their
+	// current generation before allowing a terminal denial.
 	hasUnreconciled := hasUnreconciledPolicies(policies)
 
 	// Filter to only Ready policies for evaluation.
@@ -119,6 +141,12 @@ func (m *mngr) Review(ctx context.Context, cr *cmapi.CertificateRequest) (manage
 
 	// If no policies are appropriate, return ResultUnprocessed.
 	if len(policies) == 0 {
+		if reviewErr != nil {
+			return manager.ReviewResponse{}, reviewErr
+		}
+		if len(pendingSets) > 0 {
+			return m.pendingPolicySets(pendingSets), nil
+		}
 		return manager.ReviewResponse{
 			Result:  manager.ResultUnprocessed,
 			Message: "No CertificateRequestPolicies bound or applicable",
@@ -179,6 +207,13 @@ func (m *mngr) Review(ctx context.Context, cr *cmapi.CertificateRequest) (manage
 		messages = append(messages, fmt.Sprintf("[%s: %s]", policyMessage.name, policyMessage.message))
 	}
 
+	if reviewErr != nil {
+		return manager.ReviewResponse{}, reviewErr
+	}
+	if len(pendingSets) > 0 {
+		return m.pendingPolicySets(pendingSets), nil
+	}
+
 	// Defer deny if matching policies haven't been reconciled yet — they may
 	// approve the request once Ready.
 	if hasUnreconciled {
@@ -196,14 +231,14 @@ func (m *mngr) Review(ctx context.Context, cr *cmapi.CertificateRequest) (manage
 	}, nil
 }
 
-// hasUnreconciledPolicies returns true if any policy lacks a Ready condition
-// entirely, indicating it hasn't been reconciled yet. This is distinct from
-// Ready=False which is an explicit state set by the controller.
+// hasUnreconciledPolicies reports missing, stale, or unknown readiness.
+// A current-generation Ready=False is a definitive reconciled state.
 func hasUnreconciledPolicies(policies []policyapi.CertificateRequestPolicy) bool {
 	for _, policy := range policies {
 		hasReadyCondition := false
 		for _, condition := range policy.Status.Conditions {
-			if condition.Type == policyapi.ConditionTypeReady {
+			if condition.Type == policyapi.ConditionTypeReady && condition.ObservedGeneration == policy.Generation &&
+				(condition.Status == metav1.ConditionTrue || condition.Status == metav1.ConditionFalse) {
 				hasReadyCondition = true
 				break
 			}

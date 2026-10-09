@@ -2,6 +2,18 @@ suite: test deployment
 templates:
   - deployment.yaml
 tests:
+  - it: should disable policy sets by default
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --enable-policy-sets=false
+  - it: should enable policy sets when requested
+    set:
+      app.enablePolicySets: true
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --enable-policy-sets=true
   - it: should quote proxy env vars containing special YAML characters
     set:
       http_proxy: http://proxy.example.com:8080

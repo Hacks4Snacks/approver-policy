@@ -41,6 +41,9 @@ import (
 // Options are the main options for the approver-policy. Populated via
 // processing command line flags.
 type Options struct {
+	// EnablePolicySets enables the experimental policy-set controllers.
+	EnablePolicySets bool
+
 	// kubeConfigFlags is used for generating a Kubernetes rest config via CLI
 	// flags.
 	kubeConfigFlags *genericclioptions.ConfigFlags
@@ -228,6 +231,9 @@ func (o *Options) addFlags(cmd *cobra.Command, approvers ...approver.Interface) 
 }
 
 func (o *Options) addAppFlags(fs *pflag.FlagSet) {
+	fs.BoolVar(&o.EnablePolicySets, "enable-policy-sets", false,
+		"Enable experimental policy-set evaluation. When disabled, policies with policySetRef remain inactive.")
+
 	fs.StringVar(&o.LeaderElectionNamespace, "leader-election-namespace", "",
 		"Namespace to lease leader election for controller replica set.")
 

@@ -101,6 +101,9 @@
         "approveSignerNames": {
           "$ref": "#/$defs/helm-values.app.approveSignerNames"
         },
+        "enablePolicySets": {
+          "$ref": "#/$defs/helm-values.app.enablePolicySets"
+        },
         "extraArgs": {
           "$ref": "#/$defs/helm-values.app.extraArgs"
         },
@@ -127,6 +130,11 @@
       "description": "List of signer names that approver-policy will be given permission to approve and deny. CertificateRequests referencing these signer names can be processed by approver-policy. Defaults to an empty array, allowing approval for all signers.\nref: https://cert-manager.io/docs/concepts/certificaterequest/#approval",
       "items": {},
       "type": "array"
+    },
+    "helm-values.app.enablePolicySets": {
+      "default": false,
+      "description": "Enable experimental policy-set evaluation and reconciliation. Disabled by default. Policies with policySetRef remain inactive when disabled.",
+      "type": "boolean"
     },
     "helm-values.app.extraArgs": {
       "default": [],
@@ -373,7 +381,7 @@
     },
     "helm-values.crds.keep": {
       "default": true,
-      "description": "This option makes it so that the \"helm.sh/resource-policy\": keep annotation is added to the CRD. This will prevent Helm from uninstalling the CRD when the Helm release is uninstalled. WARNING: when the CRDs are removed, all cert-manager-approver-policy custom resources\n(CertificateRequestPolicy) will be removed too by the garbage collector.",
+      "description": "This option makes it so that the \"helm.sh/resource-policy\": keep annotation is added to the CRD. This will prevent Helm from uninstalling the CRD when the Helm release is uninstalled. WARNING: when the CRDs are removed, all cert-manager-approver-policy custom resources\n(CertificateRequestPolicy and CertificateRequestPolicySet) will be removed too by the garbage collector.",
       "type": "boolean"
     },
     "helm-values.dnsPolicy": {

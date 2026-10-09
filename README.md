@@ -24,6 +24,19 @@ Please follow the documentation at
 [cert-manager.io](https://cert-manager.io/docs/usage/approver-policy/) for
 installing and using approver-policy.
 
+## Policy Set Proposal
+
+This branch includes an opt-in `CertificateRequestPolicySet` prototype for
+coordinating policy membership and readiness. See the
+[design proposal](design/20261008-policy-sets.md) for the API, evaluation rules,
+examples, and upgrade limitations. This is not a released upstream feature.
+Enable it with `app.enablePolicySets: true` in Helm or `--enable-policy-sets=true`.
+It defaults off; disabling it leaves policies with `policySetRef` inactive.
+Follow the [staged activation procedure](design/20261008-policy-sets.md#first-activation):
+upgrade every replica with the gate off, enable it across every replica, then
+apply opt-in configuration. Mixed-version compatibility requires release-level
+validation; the prototype's local tests do not certify older released images.
+
 ## Makefile modules
 
 This project uses [Makefile modules](https://github.com/cert-manager/makefile-modules), see the README there for more information.

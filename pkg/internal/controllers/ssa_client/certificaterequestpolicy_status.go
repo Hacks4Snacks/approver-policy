@@ -32,20 +32,43 @@ type certificateRequestPolicyStatusStatusApplyConfiguration struct {
 	Status                           *policyapi.CertificateRequestPolicyStatus `json:"status,omitempty"`
 }
 
+type certificateRequestPolicySetStatusApplyConfiguration struct {
+	v1.TypeMetaApplyConfiguration    `json:",inline"`
+	*v1.ObjectMetaApplyConfiguration `json:"metadata,omitempty"`
+	Status                           *policyapi.CertificateRequestPolicySetStatus `json:"status,omitempty"`
+}
+
+// GenerateCertificateRequestPolicySetStatusPatch constructs a set status apply patch.
+func GenerateCertificateRequestPolicySetStatusPatch(policySet *policyapi.CertificateRequestPolicySet, status *policyapi.CertificateRequestPolicySetStatus) (*policyapi.CertificateRequestPolicySet, client.Patch, error) {
+	object := &policyapi.CertificateRequestPolicySet{ObjectMeta: metav1.ObjectMeta{Name: policySet.Name, UID: policySet.UID, ResourceVersion: policySet.ResourceVersion}}
+	configuration := &certificateRequestPolicySetStatusApplyConfiguration{
+		ObjectMetaApplyConfiguration: &v1.ObjectMetaApplyConfiguration{},
+		Status:                       status,
+	}
+	configuration.WithName(policySet.Name).WithUID(policySet.UID).WithResourceVersion(policySet.ResourceVersion)
+	configuration.WithKind("CertificateRequestPolicySet")
+	configuration.WithAPIVersion(policyapi.SchemeGroupVersion.Identifier())
+	encoded, err := json.Marshal(configuration)
+	if err != nil {
+		return object, nil, err
+	}
+	return object, applyPatch{encoded}, nil
+}
+
 func GenerateCertificateRequestPolicyStatusPatch(
-	name string,
+	policy *policyapi.CertificateRequestPolicy,
 	status *policyapi.CertificateRequestPolicyStatus,
 ) (*policyapi.CertificateRequestPolicy, client.Patch, error) {
 	// This object is used to deduce the name + unmarshall the return value in
 	crp := &policyapi.CertificateRequestPolicy{
-		ObjectMeta: metav1.ObjectMeta{Name: name},
+		ObjectMeta: metav1.ObjectMeta{Name: policy.Name, UID: policy.UID, ResourceVersion: policy.ResourceVersion},
 	}
 
 	// This object is used to render the patch
 	b := &certificateRequestPolicyStatusStatusApplyConfiguration{
 		ObjectMetaApplyConfiguration: &v1.ObjectMetaApplyConfiguration{},
 	}
-	b.WithName(name)
+	b.WithName(policy.Name).WithUID(policy.UID).WithResourceVersion(policy.ResourceVersion)
 	b.WithKind(policyapi.CertificateRequestPolicyKind)
 	b.WithAPIVersion(policyapi.SchemeGroupVersion.Identifier())
 	b.Status = status

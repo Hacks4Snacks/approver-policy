@@ -17,6 +17,7 @@ limitations under the License.
 package predicate
 
 import (
+	"context"
 	"path"
 	"testing"
 	"time"
@@ -25,6 +26,7 @@ import (
 	cmmeta "github.com/cert-manager/cert-manager/pkg/apis/meta/v1"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	authzv1 "k8s.io/api/authorization/v1"
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	apiequality "k8s.io/apimachinery/pkg/api/equality"
@@ -32,10 +34,50 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	fakeclient "sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	policyapi "github.com/cert-manager/approver-policy/pkg/apis/policy/v1alpha1"
 	testenv "github.com/cert-manager/approver-policy/test/env"
 )
+
+func Test_RBACBoundAuthorizationResponse(t *testing.T) {
+	for _, resource := range []string{"certificaterequestpolicies", "certificaterequestpolicysets"} {
+		t.Run(resource, func(t *testing.T) {
+			for _, test := range []struct {
+				name      string
+				status    authzv1.SubjectAccessReviewStatus
+				wantError bool
+			}{
+				{name: "allowed", status: authzv1.SubjectAccessReviewStatus{Allowed: true}},
+				{name: "allowed with ancillary error", status: authzv1.SubjectAccessReviewStatus{Allowed: true, EvaluationError: "missing unrelated role"}},
+				{name: "denied", status: authzv1.SubjectAccessReviewStatus{Denied: true}},
+				{name: "denied with ancillary error", status: authzv1.SubjectAccessReviewStatus{Denied: true, EvaluationError: "missing unrelated role"}},
+				{name: "no permission"},
+				{name: "inconclusive authorization", status: authzv1.SubjectAccessReviewStatus{EvaluationError: "authorization webhook timed out"}, wantError: true},
+			} {
+				t.Run(test.name, func(t *testing.T) {
+					apiClient := fakeclient.NewClientBuilder().WithScheme(policyapi.GlobalScheme).
+						WithInterceptorFuncs(interceptor.Funcs{Create: func(_ context.Context, _ client.WithWatch, object client.Object, _ ...client.CreateOption) error {
+							review := object.(*authzv1.SubjectAccessReview)
+							require.Equal(t, resource, review.Spec.ResourceAttributes.Resource)
+							review.Status = test.status
+							return nil
+						}}).Build()
+					policies, err := rbacBound(apiClient, resource)(t.Context(), &cmapi.CertificateRequest{}, []policyapi.CertificateRequestPolicy{{
+						ObjectMeta: metav1.ObjectMeta{Name: "policy"},
+					}})
+					if test.wantError {
+						require.ErrorContains(t, err, test.status.EvaluationError)
+						require.Empty(t, policies)
+						return
+					}
+					require.NoError(t, err)
+					assert.Equal(t, test.status.Allowed, len(policies) == 1)
+				})
+			}
+		})
+	}
+}
 
 func Test_RBACBound(t *testing.T) {
 	env := testenv.RunControlPlane(t, t.Context(),
@@ -449,6 +491,28 @@ func Test_Ready(t *testing.T) {
 					{Type: policyapi.ConditionTypeReady, Status: metav1.ConditionTrue},
 				}}},
 			},
+		},
+		"stale ready condition must not return policy": {
+			policies: []policyapi.CertificateRequestPolicy{{
+				ObjectMeta: metav1.ObjectMeta{Generation: 2},
+				Status: policyapi.CertificateRequestPolicyStatus{Conditions: []metav1.Condition{{
+					Type: policyapi.ConditionTypeReady, Status: metav1.ConditionTrue, ObservedGeneration: 1,
+				}}},
+			}},
+		},
+		"current-generation ready condition returns policy": {
+			policies: []policyapi.CertificateRequestPolicy{{
+				ObjectMeta: metav1.ObjectMeta{Generation: 2},
+				Status: policyapi.CertificateRequestPolicyStatus{Conditions: []metav1.Condition{{
+					Type: policyapi.ConditionTypeReady, Status: metav1.ConditionTrue, ObservedGeneration: 2,
+				}}},
+			}},
+			expPolicies: []policyapi.CertificateRequestPolicy{{
+				ObjectMeta: metav1.ObjectMeta{Generation: 2},
+				Status: policyapi.CertificateRequestPolicyStatus{Conditions: []metav1.Condition{{
+					Type: policyapi.ConditionTypeReady, Status: metav1.ConditionTrue, ObservedGeneration: 2,
+				}}},
+			}},
 		},
 		"one policy which is ready another not, return single policy": {
 			policies: []policyapi.CertificateRequestPolicy{

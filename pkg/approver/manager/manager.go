@@ -18,6 +18,7 @@ package manager
 
 import (
 	"context"
+	"time"
 
 	cmapi "github.com/cert-manager/cert-manager/pkg/apis/certmanager/v1"
 )
@@ -35,9 +36,8 @@ const (
 	// request.
 	ResultDenied
 
-	// ResultUnprocessed is the result of a review where the manager has deemed
-	// that the request is not appropriate for any evaluators given the current
-	// policy. It is neither approved or denied by the manager.
+	// ResultUnprocessed means no terminal decision is available under the
+	// current policy configuration. The request is neither approved nor denied.
 	ResultUnprocessed
 )
 
@@ -49,6 +49,10 @@ type ReviewResponse struct {
 	// Message is optional context as to why the manager has given the result it
 	// has.
 	Message string
+
+	// RequeueAfter requests reevaluation of an Unprocessed response after this
+	// duration. Zero leaves reevaluation to policy, namespace, or RBAC events.
+	RequeueAfter time.Duration
 }
 
 // Interface is an Approver Manager that responsible for evaluating whether
@@ -63,8 +67,8 @@ type Interface interface {
 	// - Consumers should consider a ResultDenied response to mean
 	//   the CertificateRequest is **denied**.
 	// - Consumers should consider a ResultUnprocessed response to mean the
-	//   manager doesn't consider the request to be appropriate for any evaluator
-	//   and so no review was run. The request is neither approved or denied.
+	//   manager has not made a terminal decision. The request may be awaiting
+	//   policy configuration; honor RequeueAfter when it is positive.
 	// - Consumers should treat any error response as marking the
 	//   CertificateRequest as neither approved nor denied, and may consider
 	//   re-evaluation at a later time.

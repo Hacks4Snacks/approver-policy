@@ -50,6 +50,26 @@ webhooks:
         name: {{ include "cert-manager-approver-policy.name" . }}
         namespace: {{ .Release.Namespace | quote }}
         path: /validate-policy-cert-manager-io-v1alpha1-certificaterequestpolicy
+  - name: policysets.policy.cert-manager.io
+    rules:
+      - apiGroups:
+          - "policy.cert-manager.io"
+        apiVersions:
+          - "v1alpha1"
+        operations:
+          - CREATE
+          - UPDATE
+        resources:
+          - certificaterequestpolicysets
+    admissionReviewVersions: ["v1"]
+    timeoutSeconds: {{ .Values.app.webhook.timeoutSeconds }}
+    failurePolicy: Fail
+    sideEffects: None
+    clientConfig:
+      service:
+        name: {{ include "cert-manager-approver-policy.name" . }}
+        namespace: {{ .Release.Namespace | quote }}
+        path: /validate-policy-cert-manager-io-v1alpha1-certificaterequestpolicyset
 ---
 apiVersion: v1
 kind: Secret

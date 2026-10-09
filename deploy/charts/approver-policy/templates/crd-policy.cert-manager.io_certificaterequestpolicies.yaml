@@ -1183,6 +1183,20 @@ spec:
                     configuration that should be executed when this policy is evaluated
                     against a CertificateRequest.
                   type: object
+                policySetRef:
+                  description: |-
+                    policySetRef opts this policy into a CertificateRequestPolicySet. The
+                    policy is not evaluated independently when the set is absent or incomplete.
+                  properties:
+                    name:
+                      description: name is the cluster-scoped CertificateRequestPolicySet name.
+                      maxLength: 253
+                      minLength: 1
+                      pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
+                      type: string
+                  required:
+                    - name
+                  type: object
                 selector:
                   description: |-
                     selector is used for selecting over which CertificateRequests this
