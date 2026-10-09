@@ -13,6 +13,7 @@ import (
 
 	policyapi "github.com/cert-manager/approver-policy/pkg/apis/policy/v1alpha1"
 	"github.com/cert-manager/approver-policy/pkg/approver/manager"
+	"github.com/cert-manager/approver-policy/pkg/internal/approver/manager/predicate"
 	"github.com/cert-manager/approver-policy/pkg/internal/util"
 )
 
@@ -48,7 +49,22 @@ func (m *mngr) policySetMembers(ctx context.Context, request *cmapi.CertificateR
 		setsByName[policySet.Name] = policySet
 		selector := policyapi.CertificateRequestPolicySelector{}
 		if policySet.Spec.Selector != nil {
-			selector = *policySet.Spec.Selector
+			selector.IssuerRef = policySet.Spec.Selector.IssuerRef
+			selector.Namespace = policySet.Spec.Selector.Namespace
+			if len(policySet.Spec.Selector.IssuerRefs) > 0 {
+				matched := false
+				for index := range policySet.Spec.Selector.IssuerRefs {
+					issuer := &policySet.Spec.Selector.IssuerRefs[index]
+					if predicate.MatchesIssuerRef(request, issuer) {
+						selector.IssuerRef = issuer
+						matched = true
+						break
+					}
+				}
+				if !matched {
+					continue
+				}
+			}
 		}
 		candidates = append(candidates, policyapi.CertificateRequestPolicy{
 			ObjectMeta: metav1.ObjectMeta{Name: policySet.Name},

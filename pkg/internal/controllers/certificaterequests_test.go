@@ -263,7 +263,7 @@ func TestPolicySetRolloutLeaderHandoff(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{Name: "services"},
 		Spec: policyapi.CertificateRequestPolicySetSpec{
 			Policies: []policyapi.CertificateRequestPolicyReference{{Name: "deny-member"}, {Name: "allow-member"}},
-			Selector: &policyapi.CertificateRequestPolicySelector{IssuerRef: &policyapi.CertificateRequestPolicySelectorIssuerRef{Name: new("service-issuer")}},
+			Selector: &policyapi.CertificateRequestPolicySetSelector{IssuerRef: &policyapi.CertificateRequestPolicySelectorIssuerRef{Name: new("service-issuer")}},
 		},
 	}
 	require.NoError(t, env.AdminClient.Create(t.Context(), policySet))

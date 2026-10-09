@@ -74,7 +74,7 @@ var _ = Context("Review", func() {
 			ObjectMeta: metav1.ObjectMeta{Name: setName},
 			Spec: policyapi.CertificateRequestPolicySetSpec{
 				Policies: []policyapi.CertificateRequestPolicyReference{{Name: allowName}, {Name: denyName}},
-				Selector: &policyapi.CertificateRequestPolicySelector{
+				Selector: &policyapi.CertificateRequestPolicySetSelector{
 					Namespace: &policyapi.CertificateRequestPolicySelectorNamespace{MatchNames: []string{namespace.Name}},
 				},
 			},
@@ -180,6 +180,69 @@ var _ = Context("Review", func() {
 		Entry("member arrival wakes an undecided request", true),
 		Entry("set arrival wakes an undecided request", false),
 	)
+
+	It("policy set issuer alternatives isolate pending requests", func() {
+		setName := namespace.Name
+		allowName, peerName, fallbackName := setName+"-allow", setName+"-peer", setName+"-fallback"
+		newPolicy := func(name, issuer, dnsName string) *policyapi.CertificateRequestPolicy {
+			policy := &policyapi.CertificateRequestPolicy{
+				ObjectMeta: metav1.ObjectMeta{Name: name},
+				Spec: policyapi.CertificateRequestPolicySpec{
+					Selector: policyapi.CertificateRequestPolicySelector{
+						IssuerRef: &policyapi.CertificateRequestPolicySelectorIssuerRef{},
+						Namespace: &policyapi.CertificateRequestPolicySelectorNamespace{MatchNames: []string{namespace.Name}},
+					},
+					Allowed: &policyapi.CertificateRequestPolicyAllowed{DNSNames: &policyapi.CertificateRequestPolicyAllowedStringSlice{Values: &[]string{dnsName}}},
+				},
+			}
+			if issuer != "" {
+				policy.Spec.Selector.IssuerRef.Name = new(issuer)
+				policy.Spec.PolicySetRef = &policyapi.CertificateRequestPolicySetReference{Name: setName}
+			}
+			return policy
+		}
+		policySet := &policyapi.CertificateRequestPolicySet{
+			ObjectMeta: metav1.ObjectMeta{Name: setName},
+			Spec: policyapi.CertificateRequestPolicySetSpec{
+				Policies: []policyapi.CertificateRequestPolicyReference{{Name: allowName}, {Name: peerName}},
+				Selector: &policyapi.CertificateRequestPolicySetSelector{
+					IssuerRefs: []policyapi.CertificateRequestPolicySelectorIssuerRef{
+						{Name: new("issuer-a"), Kind: new("Issuer"), Group: new("cert-manager.io")},
+						{Name: new("issuer-b"), Kind: new("Issuer"), Group: new("cert-manager.io")},
+					},
+					Namespace: &policyapi.CertificateRequestPolicySelectorNamespace{MatchNames: []string{namespace.Name}},
+				},
+			},
+		}
+		Expect(env.AdminClient.Create(ctx, policySet)).To(Succeed())
+		Expect(env.AdminClient.Create(ctx, newPolicy(allowName, "issuer-a", "example.com"))).To(Succeed())
+		Expect(env.AdminClient.Create(ctx, newPolicy(fallbackName, "", "other.example.com"))).To(Succeed())
+		waitForReady(ctx, env.AdminClient, allowName)
+		waitForReady(ctx, env.AdminClient, fallbackName)
+		createRole := bindUserToCreateCertificateRequest(ctx, env.AdminClient, namespace.Name)
+		policyRole := bindUserToUseCertificateRequestPolicies(ctx, env.AdminClient, namespace.Name, allowName, peerName, fallbackName)
+		setRole := bindUserToUsePolicyResources(ctx, env.AdminClient, namespace.Name, "certificaterequestpolicysets", setName)
+		newRequest := func(issuer string) string {
+			return createCertificateRequest(ctx, env.UserClient, namespace.Name,
+				gen.SetCSRDNSNames("example.com"),
+				gen.SetCertificateRequestIssuer(cmmeta.IssuerReference{Name: issuer, Kind: "Issuer", Group: "cert-manager.io"}),
+			)
+		}
+		requestA, requestB, unrelated := newRequest("issuer-a"), newRequest("issuer-b"), newRequest("issuer-c")
+		waitForNoApproveOrDeny(ctx, env.AdminClient, namespace.Name, requestA)
+		waitForNoApproveOrDeny(ctx, env.AdminClient, namespace.Name, requestB)
+		waitForDenial(ctx, env.AdminClient, namespace.Name, unrelated)
+		Expect(env.AdminClient.Get(ctx, client.ObjectKeyFromObject(policySet), policySet)).To(Succeed())
+		policySet.Spec.Selector.IssuerRefs = policySet.Spec.Selector.IssuerRefs[1:]
+		Expect(env.AdminClient.Update(ctx, policySet)).To(Succeed())
+		waitForDenial(ctx, env.AdminClient, namespace.Name, requestA)
+		waitForNoApproveOrDeny(ctx, env.AdminClient, namespace.Name, requestB)
+		Expect(env.AdminClient.Create(ctx, newPolicy(peerName, "issuer-b", "example.com"))).To(Succeed())
+		waitForApproval(ctx, env.AdminClient, namespace.Name, requestB)
+		waitForDenial(ctx, env.AdminClient, namespace.Name, requestA)
+		waitForDenial(ctx, env.AdminClient, namespace.Name, unrelated)
+		deleteRoleAndRoleBindings(ctx, namespace.Name, createRole, policyRole, setRole)
+	})
 
 	It("if a policy approves the request, the CertificateRequest should be approved", func() {
 		plugin.FakeReconciler = fake.NewFakeReconciler().WithReady(func(_ context.Context, policy *policyapi.CertificateRequestPolicy) (approver.ReconcilerReadyResponse, error) {

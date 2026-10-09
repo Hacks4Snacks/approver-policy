@@ -5,6 +5,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/validation/field"
 
 	policyapi "github.com/cert-manager/approver-policy/pkg/apis/policy/v1alpha1"
 )
@@ -17,6 +18,10 @@ func TestPolicySetReadiness(t *testing.T) {
 		reason string
 	}{
 		{name: "complete", status: metav1.ConditionTrue, reason: "Ready"},
+		{name: "complete with issuer alternatives", change: func(policySet *policyapi.CertificateRequestPolicySet, _ map[string]policyapi.CertificateRequestPolicy) {
+			policySet.Spec.Selector.IssuerRef = nil
+			policySet.Spec.Selector.IssuerRefs = []policyapi.CertificateRequestPolicySelectorIssuerRef{{Name: new("issuer-a")}, {Name: new("issuer-b")}}
+		}, status: metav1.ConditionTrue, reason: "Ready"},
 		{name: "missing member", change: func(_ *policyapi.CertificateRequestPolicySet, policies map[string]policyapi.CertificateRequestPolicy) {
 			delete(policies, "allow")
 		}, status: metav1.ConditionFalse, reason: "PolicyMissing"},
@@ -44,7 +49,7 @@ func TestPolicySetReadiness(t *testing.T) {
 			policySet.Spec.Policies = nil
 		}, status: metav1.ConditionFalse, reason: "InvalidMembership"},
 		{name: "empty selector", change: func(policySet *policyapi.CertificateRequestPolicySet, _ map[string]policyapi.CertificateRequestPolicy) {
-			policySet.Spec.Selector = &policyapi.CertificateRequestPolicySelector{}
+			policySet.Spec.Selector = &policyapi.CertificateRequestPolicySetSelector{}
 		}, status: metav1.ConditionFalse, reason: "InvalidSelector"},
 		{name: "invalid namespace label", change: func(policySet *policyapi.CertificateRequestPolicySet, _ map[string]policyapi.CertificateRequestPolicy) {
 			policySet.Spec.Selector.Namespace = &policyapi.CertificateRequestPolicySelectorNamespace{MatchLabels: map[string]string{"invalid key": "value"}}
@@ -58,7 +63,7 @@ func TestPolicySetReadiness(t *testing.T) {
 			policySet := &policyapi.CertificateRequestPolicySet{
 				ObjectMeta: metav1.ObjectMeta{Name: "services"},
 				Spec: policyapi.CertificateRequestPolicySetSpec{
-					Selector: &policyapi.CertificateRequestPolicySelector{IssuerRef: &policyapi.CertificateRequestPolicySelectorIssuerRef{}},
+					Selector: &policyapi.CertificateRequestPolicySetSelector{IssuerRef: &policyapi.CertificateRequestPolicySelectorIssuerRef{}},
 					Policies: []policyapi.CertificateRequestPolicyReference{{Name: "allow"}, {Name: "deny"}},
 				},
 			}
@@ -81,6 +86,32 @@ func TestPolicySetReadiness(t *testing.T) {
 			assert.Equal(t, test.status, status)
 			assert.Equal(t, test.reason, reason)
 			assert.NotEmpty(t, message)
+		})
+	}
+}
+
+func TestPolicySetSelectorValidation(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		selector *policyapi.CertificateRequestPolicySetSelector
+		valid    bool
+	}{
+		{name: "missing selector"},
+		{name: "empty selector", selector: &policyapi.CertificateRequestPolicySetSelector{}},
+		{name: "single match all", selector: &policyapi.CertificateRequestPolicySetSelector{IssuerRef: &policyapi.CertificateRequestPolicySelectorIssuerRef{}}, valid: true},
+		{name: "namespace only", selector: &policyapi.CertificateRequestPolicySetSelector{Namespace: &policyapi.CertificateRequestPolicySelectorNamespace{}}, valid: true},
+		{name: "issuer alternatives", selector: &policyapi.CertificateRequestPolicySetSelector{IssuerRefs: []policyapi.CertificateRequestPolicySelectorIssuerRef{{Name: new("issuer-a")}, {Name: new("issuer-b")}}}, valid: true},
+		{name: "explicit match all alternative", selector: &policyapi.CertificateRequestPolicySetSelector{IssuerRefs: []policyapi.CertificateRequestPolicySelectorIssuerRef{{}}}, valid: true},
+		{name: "empty issuer list", selector: &policyapi.CertificateRequestPolicySetSelector{IssuerRefs: []policyapi.CertificateRequestPolicySelectorIssuerRef{}}},
+		{name: "empty issuer list with namespace", selector: &policyapi.CertificateRequestPolicySetSelector{IssuerRefs: []policyapi.CertificateRequestPolicySelectorIssuerRef{}, Namespace: &policyapi.CertificateRequestPolicySelectorNamespace{}}},
+		{name: "conflicting forms", selector: &policyapi.CertificateRequestPolicySetSelector{IssuerRef: &policyapi.CertificateRequestPolicySelectorIssuerRef{}, IssuerRefs: []policyapi.CertificateRequestPolicySelectorIssuerRef{{Name: new("issuer")}}}},
+		{name: "maximum list", selector: &policyapi.CertificateRequestPolicySetSelector{IssuerRefs: make([]policyapi.CertificateRequestPolicySelectorIssuerRef, 64)}, valid: true},
+		{name: "oversized list", selector: &policyapi.CertificateRequestPolicySetSelector{IssuerRefs: make([]policyapi.CertificateRequestPolicySelectorIssuerRef, 65)}},
+		{name: "invalid labels", selector: &policyapi.CertificateRequestPolicySetSelector{IssuerRefs: []policyapi.CertificateRequestPolicySelectorIssuerRef{{Name: new("issuer")}}, Namespace: &policyapi.CertificateRequestPolicySelectorNamespace{MatchLabels: map[string]string{"invalid key": "value"}}}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			errors := ValidatePolicySetSelector(test.selector, field.NewPath("spec", "selector"))
+			assert.Equal(t, test.valid, len(errors) == 0, "%v", errors.ToAggregate())
 		})
 	}
 }

@@ -81,16 +81,8 @@ spec:
                   properties:
                     issuerRef:
                       description: |-
-                        issuerRef is used to match by issuer, meaning the
-                        CertificateRequestPolicy will only evaluate CertificateRequests
-                        referring to matching issuers.
-                        CertificateRequests will not be processed if the issuer does not match,
-                        regardless of whether the requestor is bound by RBAC.
-
-                        The following value will match _all_ issuers:
-                        ```
-                        issuerRef: {}
-                        ```
+                        issuerRef matches a single issuer pattern. An empty object matches all
+                        issuers. This field is mutually exclusive with issuerRefs.
                       properties:
                         group:
                           description: |-
@@ -114,12 +106,45 @@ spec:
                             An omitted field matches all names.
                           type: string
                       type: object
+                    issuerRefs:
+                      description: |-
+                        issuerRefs matches any of the listed issuer patterns. Fields within each
+                        pattern must all match. This field is mutually exclusive with issuerRef.
+                      items:
+                        description: |-
+                          CertificateRequestPolicySelectorIssuerRef defines the selector for matching
+                          the issuer reference of requests.
+                        properties:
+                          group:
+                            description: |-
+                              group is the wildcard selector to match the `spec.issuerRef.group` field
+                              on requests.
+                              Accepts wildcards "*".
+                              An omitted field matches all groups.
+                            type: string
+                          kind:
+                            description: |-
+                              kind is the wildcard selector to match the `spec.issuerRef.kind` field
+                              on requests.
+                              Accepts wildcards "*".
+                              An omitted field matches all kinds.
+                            type: string
+                          name:
+                            description: |-
+                              name is a wildcard enabled selector that matches the
+                              `spec.issuerRef.name` field of requests.
+                              Accepts wildcards "*".
+                              An omitted field matches all names.
+                            type: string
+                        type: object
+                      maxItems: 64
+                      minItems: 1
+                      type: array
+                      x-kubernetes-list-type: atomic
                     namespace:
                       description: |-
-                        namespace is used to match by namespace, meaning the
-                        CertificateRequestPolicy will only match CertificateRequests
-                        created in matching namespaces.
-                        If this field is omitted, resources in all namespaces are checked.
+                        namespace must also match when specified. Omitting it selects every
+                        namespace, subject to the issuer selector and requester permissions.
                       properties:
                         matchLabels:
                           additionalProperties:
@@ -140,8 +165,10 @@ spec:
                       type: object
                   type: object
                   x-kubernetes-validations:
-                    - message: at least issuerRef or namespace must be specified
-                      rule: has(self.issuerRef) || has(self.namespace)
+                    - message: at least issuerRef, issuerRefs, or namespace must be specified
+                      rule: has(self.issuerRef) || has(self.issuerRefs) || has(self.namespace)
+                    - message: issuerRef and issuerRefs are mutually exclusive
+                      rule: '!(has(self.issuerRef) && has(self.issuerRefs))'
               required:
                 - policies
                 - selector

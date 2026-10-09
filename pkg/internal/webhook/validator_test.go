@@ -70,7 +70,7 @@ func TestPolicySetAdmission(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{Name: "invalid-selector"},
 		Spec: policyapi.CertificateRequestPolicySetSpec{
 			Policies: []policyapi.CertificateRequestPolicyReference{{Name: "service"}},
-			Selector: &policyapi.CertificateRequestPolicySelector{Namespace: &policyapi.CertificateRequestPolicySelectorNamespace{
+			Selector: &policyapi.CertificateRequestPolicySetSelector{Namespace: &policyapi.CertificateRequestPolicySelectorNamespace{
 				MatchLabels: map[string]string{"invalid key": "value"},
 			}},
 		},
@@ -90,6 +90,16 @@ func TestPolicySetAdmission(t *testing.T) {
 	var stored policyapi.CertificateRequestPolicySet
 	require.NoError(t, env.AdminClient.Get(t.Context(), client.ObjectKeyFromObject(valid), &stored))
 	assert.Equal(t, map[string]string{"team": "identity"}, stored.Spec.Selector.Namespace.MatchLabels)
+	issuerRefs := []policyapi.CertificateRequestPolicySelectorIssuerRef{{Name: new("issuer-a")}, {Name: new("issuer-b")}}
+	stored.Spec.Selector.IssuerRefs = issuerRefs
+	require.NoError(t, env.AdminClient.Update(t.Context(), &stored))
+	require.NoError(t, env.AdminClient.Get(t.Context(), client.ObjectKeyFromObject(valid), &stored))
+	require.Equal(t, issuerRefs, stored.Spec.Selector.IssuerRefs)
+	stored.Spec.Selector.IssuerRef = &policyapi.CertificateRequestPolicySelectorIssuerRef{}
+	require.ErrorContains(t, env.AdminClient.Update(t.Context(), &stored), "mutually exclusive")
+	require.NoError(t, env.AdminClient.Get(t.Context(), client.ObjectKeyFromObject(valid), &stored))
+	require.Nil(t, stored.Spec.Selector.IssuerRef)
+	require.Equal(t, issuerRefs, stored.Spec.Selector.IssuerRefs)
 }
 
 func TestPolicySetAdmissionGateRollout(t *testing.T) {
@@ -135,14 +145,14 @@ func TestPolicySetAdmissionGateRollout(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{Name: "services"},
 		Spec: policyapi.CertificateRequestPolicySetSpec{
 			Policies: []policyapi.CertificateRequestPolicyReference{{Name: "member"}},
-			Selector: &policyapi.CertificateRequestPolicySelector{IssuerRef: &policyapi.CertificateRequestPolicySelectorIssuerRef{}},
+			Selector: &policyapi.CertificateRequestPolicySetSelector{IssuerRef: &policyapi.CertificateRequestPolicySelectorIssuerRef{}},
 		},
 	}
 	member := &policyapi.CertificateRequestPolicy{
 		ObjectMeta: metav1.ObjectMeta{Name: "member"},
 		Spec: policyapi.CertificateRequestPolicySpec{
 			PolicySetRef: &policyapi.CertificateRequestPolicySetReference{Name: policySet.Name},
-			Selector:     *policySet.Spec.Selector.DeepCopy(),
+			Selector:     policyapi.CertificateRequestPolicySelector{IssuerRef: policySet.Spec.Selector.IssuerRef.DeepCopy()},
 		},
 	}
 	for _, object := range []client.Object{policySet, member} {
@@ -201,6 +211,8 @@ func TestPolicySetValidation(t *testing.T) {
 		disabled      bool
 		labels        map[string]string
 		emptySelector bool
+		issuerRefs    []policyapi.CertificateRequestPolicySelectorIssuerRef
+		singleIssuer  bool
 		wantErr       bool
 	}{
 		{name: "valid selector"},
@@ -210,13 +222,22 @@ func TestPolicySetValidation(t *testing.T) {
 		{name: "invalid label value", labels: map[string]string{"team": "bad value"}, wantErr: true},
 		{name: "empty selector", emptySelector: true, wantErr: true},
 		{name: "disabled", disabled: true, wantErr: true},
+		{name: "issuer alternatives", issuerRefs: []policyapi.CertificateRequestPolicySelectorIssuerRef{{Name: new("issuer-a")}, {Name: new("issuer-b")}}},
+		{name: "explicit wildcard alternative", issuerRefs: []policyapi.CertificateRequestPolicySelectorIssuerRef{{}}},
+		{name: "empty issuer list", issuerRefs: []policyapi.CertificateRequestPolicySelectorIssuerRef{}, wantErr: true},
+		{name: "both issuer forms", singleIssuer: true, issuerRefs: []policyapi.CertificateRequestPolicySelectorIssuerRef{{Name: new("issuer")}}, wantErr: true},
+		{name: "too many alternatives", issuerRefs: make([]policyapi.CertificateRequestPolicySelectorIssuerRef, 65), wantErr: true},
+		{name: "disabled issuer alternatives", disabled: true, issuerRefs: []policyapi.CertificateRequestPolicySelectorIssuerRef{{Name: new("issuer")}}, wantErr: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			policySet := &policyapi.CertificateRequestPolicySet{
 				Spec: policyapi.CertificateRequestPolicySetSpec{
 					Policies: []policyapi.CertificateRequestPolicyReference{{Name: "member"}},
-					Selector: &policyapi.CertificateRequestPolicySelector{Namespace: &policyapi.CertificateRequestPolicySelectorNamespace{MatchLabels: test.labels}},
+					Selector: &policyapi.CertificateRequestPolicySetSelector{IssuerRefs: test.issuerRefs, Namespace: &policyapi.CertificateRequestPolicySelectorNamespace{MatchLabels: test.labels}},
 				},
+			}
+			if test.singleIssuer {
+				policySet.Spec.Selector.IssuerRef = &policyapi.CertificateRequestPolicySelectorIssuerRef{}
 			}
 			if test.emptySelector {
 				policySet.Spec.Selector = nil
@@ -224,6 +245,10 @@ func TestPolicySetValidation(t *testing.T) {
 			validator := &policySetValidator{enabled: !test.disabled}
 			_, err := validator.ValidateCreate(t.Context(), policySet)
 			assert.Equal(t, test.wantErr, err != nil, "%v", err)
+			if !test.disabled {
+				_, err = validator.ValidateUpdate(t.Context(), policySet, policySet.DeepCopy())
+				assert.Equal(t, test.wantErr, err != nil, "%v", err)
+			}
 			_, err = validator.ValidateDelete(t.Context(), policySet)
 			require.NoError(t, err)
 			if test.disabled {

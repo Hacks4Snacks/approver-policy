@@ -54,8 +54,30 @@ type CertificateRequestPolicySetSpec struct {
 
 	// selector scopes the set independently of whether its members exist.
 	// +required
-	// +kubebuilder:validation:XValidation:rule="has(self.issuerRef) || has(self.namespace)",message="at least issuerRef or namespace must be specified"
-	Selector *CertificateRequestPolicySelector `json:"selector,omitempty"`
+	Selector *CertificateRequestPolicySetSelector `json:"selector,omitempty"`
+}
+
+// CertificateRequestPolicySetSelector scopes requests subject to set completeness.
+// +kubebuilder:validation:XValidation:rule="has(self.issuerRef) || has(self.issuerRefs) || has(self.namespace)",message="at least issuerRef, issuerRefs, or namespace must be specified"
+// +kubebuilder:validation:XValidation:rule="!(has(self.issuerRef) && has(self.issuerRefs))",message="issuerRef and issuerRefs are mutually exclusive"
+type CertificateRequestPolicySetSelector struct {
+	// issuerRef matches a single issuer pattern. An empty object matches all
+	// issuers. This field is mutually exclusive with issuerRefs.
+	// +optional
+	IssuerRef *CertificateRequestPolicySelectorIssuerRef `json:"issuerRef,omitempty"`
+
+	// issuerRefs matches any of the listed issuer patterns. Fields within each
+	// pattern must all match. This field is mutually exclusive with issuerRef.
+	// +optional
+	// +listType=atomic
+	// +kubebuilder:validation:MinItems=1
+	// +kubebuilder:validation:MaxItems=64
+	IssuerRefs []CertificateRequestPolicySelectorIssuerRef `json:"issuerRefs,omitempty"` //nolint:kubeapilinter // arrayofstruct: issuer patterns deliberately allow omitted fields and {} wildcard matching.
+
+	// namespace must also match when specified. Omitting it selects every
+	// namespace, subject to the issuer selector and requester permissions.
+	// +optional
+	Namespace *CertificateRequestPolicySelectorNamespace `json:"namespace,omitempty"`
 }
 
 // CertificateRequestPolicyReference identifies an expected policy by name.

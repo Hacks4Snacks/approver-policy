@@ -32,6 +32,8 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	fakeclient "sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
@@ -55,6 +57,32 @@ func TestPolicySetSchema(t *testing.T) {
 		valid  bool
 	}{
 		{name: "valid set", valid: true},
+		{name: "issuer alternatives", valid: true, change: func(policySet *policyapi.CertificateRequestPolicySet) {
+			policySet.Spec.Selector.IssuerRef = nil
+			policySet.Spec.Selector.IssuerRefs = []policyapi.CertificateRequestPolicySelectorIssuerRef{
+				{Name: new("issuer-a"), Kind: new("Issuer"), Group: new("cert-manager.io")},
+				{Name: new("issuer-b"), Kind: new("ClusterIssuer"), Group: new("cert-manager.io")},
+			}
+		}},
+		{name: "maximum issuer alternatives", valid: true, change: func(policySet *policyapi.CertificateRequestPolicySet) {
+			policySet.Spec.Selector.IssuerRef = nil
+			for index := range 64 {
+				policySet.Spec.Selector.IssuerRefs = append(policySet.Spec.Selector.IssuerRefs, policyapi.CertificateRequestPolicySelectorIssuerRef{Name: new(fmt.Sprintf("issuer-%d", index))})
+			}
+		}},
+		{name: "too many issuer alternatives", change: func(policySet *policyapi.CertificateRequestPolicySet) {
+			policySet.Spec.Selector.IssuerRef = nil
+			for index := range 65 {
+				policySet.Spec.Selector.IssuerRefs = append(policySet.Spec.Selector.IssuerRefs, policyapi.CertificateRequestPolicySelectorIssuerRef{Name: new(fmt.Sprintf("issuer-%d", index))})
+			}
+		}},
+		{name: "both issuer selector forms", change: func(policySet *policyapi.CertificateRequestPolicySet) {
+			policySet.Spec.Selector.IssuerRefs = []policyapi.CertificateRequestPolicySelectorIssuerRef{{Name: new("issuer")}}
+		}},
+		{name: "explicit wildcard alternative", valid: true, change: func(policySet *policyapi.CertificateRequestPolicySet) {
+			policySet.Spec.Selector.IssuerRef = nil
+			policySet.Spec.Selector.IssuerRefs = []policyapi.CertificateRequestPolicySelectorIssuerRef{{}}
+		}},
 		{name: "missing spec", change: func(policySet *policyapi.CertificateRequestPolicySet) {
 			policySet.Spec = policyapi.CertificateRequestPolicySetSpec{}
 		}},
@@ -76,7 +104,7 @@ func TestPolicySetSchema(t *testing.T) {
 			policySet.Spec.Selector = nil
 		}},
 		{name: "empty selector", change: func(policySet *policyapi.CertificateRequestPolicySet) {
-			policySet.Spec.Selector = &policyapi.CertificateRequestPolicySelector{}
+			policySet.Spec.Selector = &policyapi.CertificateRequestPolicySetSelector{}
 		}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -84,7 +112,7 @@ func TestPolicySetSchema(t *testing.T) {
 				ObjectMeta: metav1.ObjectMeta{GenerateName: "schema-"},
 				Spec: policyapi.CertificateRequestPolicySetSpec{
 					Policies: []policyapi.CertificateRequestPolicyReference{{Name: "service"}},
-					Selector: &policyapi.CertificateRequestPolicySelector{IssuerRef: &policyapi.CertificateRequestPolicySelectorIssuerRef{}},
+					Selector: &policyapi.CertificateRequestPolicySetSelector{IssuerRef: &policyapi.CertificateRequestPolicySelectorIssuerRef{}},
 				},
 			}
 			if test.change != nil {
@@ -99,6 +127,23 @@ func TestPolicySetSchema(t *testing.T) {
 			var stored policyapi.CertificateRequestPolicySet
 			require.NoError(t, env.AdminClient.Get(t.Context(), client.ObjectKeyFromObject(policySet), &stored))
 			assert.Equal(t, policySet.Spec, stored.Spec)
+			if len(stored.Spec.Selector.IssuerRefs) > 1 {
+				copied := stored.DeepCopy()
+				*copied.Spec.Selector.IssuerRefs[0].Name = "changed-copy"
+				require.NotEqual(t, *stored.Spec.Selector.IssuerRefs[0].Name, *copied.Spec.Selector.IssuerRefs[0].Name)
+				for _, issuerRefs := range [][]policyapi.CertificateRequestPolicySelectorIssuerRef{stored.Spec.Selector.IssuerRefs, stored.Spec.Selector.IssuerRefs[1:2]} {
+					applied := stored.DeepCopy()
+					applied.TypeMeta = metav1.TypeMeta{APIVersion: policyapi.SchemeGroupVersion.String(), Kind: "CertificateRequestPolicySet"}
+					applied.ObjectMeta = metav1.ObjectMeta{Name: stored.Name}
+					applied.Spec.Selector.IssuerRefs = issuerRefs
+					object, err := runtime.DefaultUnstructuredConverter.ToUnstructured(applied)
+					require.NoError(t, err)
+					configuration := client.ApplyConfigurationFromUnstructured(&unstructured.Unstructured{Object: object})
+					require.NoError(t, env.AdminClient.Apply(t.Context(), configuration, client.FieldOwner("issuer-scoping-test"), client.ForceOwnership))
+				}
+				require.NoError(t, env.AdminClient.Get(t.Context(), client.ObjectKeyFromObject(policySet), &stored))
+				require.Equal(t, policySet.Spec.Selector.IssuerRefs[1:2], stored.Spec.Selector.IssuerRefs)
+			}
 			policy := &policyapi.CertificateRequestPolicy{
 				ObjectMeta: metav1.ObjectMeta{GenerateName: "member-"},
 				Spec: policyapi.CertificateRequestPolicySpec{
@@ -119,6 +164,22 @@ func TestPolicySetSchema(t *testing.T) {
 			err = env.AdminClient.Create(t.Context(), invalidPolicy)
 			require.True(t, apierrors.IsInvalid(err), "expected invalid set reference rejection, got %v", err)
 		})
+	}
+	for _, selector := range []map[string]any{
+		{"issuerRefs": []any{}},
+		{"issuerRefs": []any{}, "namespace": map[string]any{}},
+	} {
+		invalid := &unstructured.Unstructured{Object: map[string]any{
+			"apiVersion": policyapi.SchemeGroupVersion.String(),
+			"kind":       "CertificateRequestPolicySet",
+			"metadata":   map[string]any{"generateName": "empty-issuer-list-"},
+			"spec": map[string]any{
+				"policies": []any{map[string]any{"name": "service"}},
+				"selector": selector,
+			},
+		}}
+		err := env.AdminClient.Create(t.Context(), invalid)
+		require.True(t, apierrors.IsInvalid(err), "expected an explicit empty issuer list to fail schema validation, got %v", err)
 	}
 }
 
@@ -207,7 +268,7 @@ func TestReviewPolicySets(t *testing.T) {
 				ObjectMeta: metav1.ObjectMeta{Name: "services"},
 				Spec: policyapi.CertificateRequestPolicySetSpec{
 					Policies: []policyapi.CertificateRequestPolicyReference{{Name: "allow"}, {Name: "deny"}},
-					Selector: &policyapi.CertificateRequestPolicySelector{IssuerRef: &policyapi.CertificateRequestPolicySelectorIssuerRef{}},
+					Selector: &policyapi.CertificateRequestPolicySetSelector{IssuerRef: &policyapi.CertificateRequestPolicySelectorIssuerRef{}},
 				},
 			}
 			newPolicy := func(name string) *policyapi.CertificateRequestPolicy {
@@ -316,6 +377,115 @@ func TestReviewPolicySets(t *testing.T) {
 	}
 }
 
+func TestReviewPolicySetIssuerScoping(t *testing.T) {
+	for _, test := range []struct {
+		name                string
+		issuer              cmmeta.IssuerReference
+		issuerRefs          []policyapi.CertificateRequestPolicySelectorIssuerRef
+		namespace           *policyapi.CertificateRequestPolicySelectorNamespace
+		memberIssuer        string
+		missingMember       bool
+		denySetUse          bool
+		denyPolicyUse       bool
+		independentApproval bool
+		result              manager.ReviewResult
+		setReviews          int
+	}{
+		{name: "first issuer approves", issuer: cmmeta.IssuerReference{Name: "issuer-a"}, result: manager.ResultApproved, setReviews: 1},
+		{name: "second issuer approves", issuer: cmmeta.IssuerReference{Name: "issuer-b"}, result: manager.ResultApproved, setReviews: 1},
+		{name: "matching incomplete set waits", issuer: cmmeta.IssuerReference{Name: "issuer-a"}, missingMember: true, result: manager.ResultUnprocessed, setReviews: 1},
+		{name: "other issuer does not wait for incomplete set", issuer: cmmeta.IssuerReference{Name: "issuer-c"}, missingMember: true, result: manager.ResultDenied},
+		{name: "other issuer cannot use complete set", issuer: cmmeta.IssuerReference{Name: "issuer-c"}, result: manager.ResultDenied},
+		{name: "kind must match", issuer: cmmeta.IssuerReference{Name: "issuer-a", Kind: "ClusterIssuer"}, result: manager.ResultDenied},
+		{name: "group must match", issuer: cmmeta.IssuerReference{Name: "issuer-a", Group: "external.example.com"}, result: manager.ResultDenied},
+		{name: "external issuer alternative", issuer: cmmeta.IssuerReference{Name: "external", Kind: "ExternalIssuer", Group: "external.example.com"},
+			issuerRefs: []policyapi.CertificateRequestPolicySelectorIssuerRef{{Name: new("issuer-a"), Kind: new("Issuer"), Group: new("cert-manager.io")}, {Name: new("external"), Kind: new("ExternalIssuer"), Group: new("external.example.com")}}, result: manager.ResultApproved, setReviews: 1},
+		{name: "fields cannot combine across alternatives", issuer: cmmeta.IssuerReference{Name: "issuer-a", Kind: "ExternalIssuer", Group: "external.example.com"},
+			issuerRefs: []policyapi.CertificateRequestPolicySelectorIssuerRef{{Name: new("issuer-a"), Kind: new("Issuer"), Group: new("cert-manager.io")}, {Name: new("external"), Kind: new("ExternalIssuer"), Group: new("external.example.com")}}, result: manager.ResultDenied},
+		{name: "overlapping patterns authorize once", issuer: cmmeta.IssuerReference{Name: "issuer-a"},
+			issuerRefs: []policyapi.CertificateRequestPolicySelectorIssuerRef{{Name: new("issuer-*")}, {Name: new("issuer-a")}}, result: manager.ResultApproved, setReviews: 1},
+		{name: "explicit wildcard alternative", issuer: cmmeta.IssuerReference{Name: "any-issuer"},
+			issuerRefs: []policyapi.CertificateRequestPolicySelectorIssuerRef{{}}, result: manager.ResultApproved, setReviews: 1},
+		{name: "namespace name still required", issuer: cmmeta.IssuerReference{Name: "issuer-a"}, missingMember: true,
+			namespace: &policyapi.CertificateRequestPolicySelectorNamespace{MatchNames: []string{"other"}}, result: manager.ResultDenied, setReviews: 1},
+		{name: "namespace labels still required", issuer: cmmeta.IssuerReference{Name: "issuer-a"}, missingMember: true,
+			namespace: &policyapi.CertificateRequestPolicySelectorNamespace{MatchLabels: map[string]string{"team": "other"}}, result: manager.ResultDenied, setReviews: 1},
+		{name: "member selector remains required", issuer: cmmeta.IssuerReference{Name: "issuer-a"}, memberIssuer: "other", result: manager.ResultDenied, setReviews: 1},
+		{name: "set use remains required", issuer: cmmeta.IssuerReference{Name: "issuer-a"}, missingMember: true, denySetUse: true, result: manager.ResultDenied, setReviews: 1},
+		{name: "member use remains required", issuer: cmmeta.IssuerReference{Name: "issuer-a"}, denyPolicyUse: true, result: manager.ResultDenied, setReviews: 1},
+		{name: "incomplete set preserves independent approval", issuer: cmmeta.IssuerReference{Name: "issuer-a"}, missingMember: true, independentApproval: true, result: manager.ResultApproved, setReviews: 1},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			issuerRefs := test.issuerRefs
+			if issuerRefs == nil {
+				issuerRefs = []policyapi.CertificateRequestPolicySelectorIssuerRef{
+					{Name: new("issuer-a"), Kind: new("Issuer"), Group: new("cert-manager.io")},
+					{Name: new("issuer-b"), Kind: new("Issuer"), Group: new("cert-manager.io")},
+				}
+			}
+			namespace := test.namespace
+			if namespace == nil {
+				namespace = &policyapi.CertificateRequestPolicySelectorNamespace{MatchNames: []string{"tenant"}, MatchLabels: map[string]string{"team": "apps"}}
+			}
+			policySet := &policyapi.CertificateRequestPolicySet{ObjectMeta: metav1.ObjectMeta{Name: "services"}, Spec: policyapi.CertificateRequestPolicySetSpec{
+				Policies: []policyapi.CertificateRequestPolicyReference{{Name: "member"}, {Name: "peer"}},
+				Selector: &policyapi.CertificateRequestPolicySetSelector{IssuerRefs: issuerRefs, Namespace: namespace},
+			}}
+			newPolicy := func(name string) *policyapi.CertificateRequestPolicy {
+				return &policyapi.CertificateRequestPolicy{
+					ObjectMeta: metav1.ObjectMeta{Name: name, Generation: 1},
+					Spec: policyapi.CertificateRequestPolicySpec{Selector: policyapi.CertificateRequestPolicySelector{
+						IssuerRef: &policyapi.CertificateRequestPolicySelectorIssuerRef{},
+					}},
+					Status: policyapi.CertificateRequestPolicyStatus{Conditions: []metav1.Condition{{
+						Type: policyapi.ConditionTypeReady, Status: metav1.ConditionTrue, ObservedGeneration: 1,
+					}}},
+				}
+			}
+			member := newPolicy("member")
+			member.Spec.PolicySetRef = &policyapi.CertificateRequestPolicySetReference{Name: policySet.Name}
+			memberIssuer := test.memberIssuer
+			if memberIssuer == "" {
+				memberIssuer = test.issuer.Name
+			}
+			member.Spec.Selector.IssuerRef.Name = &memberIssuer
+			objects := []client.Object{policySet, member, newPolicy("independent"), &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "tenant", Labels: map[string]string{"team": "apps"}}}}
+			if !test.missingMember {
+				peer := newPolicy("peer")
+				peer.Spec.PolicySetRef = &policyapi.CertificateRequestPolicySetReference{Name: policySet.Name}
+				peer.Spec.Selector.IssuerRef.Name = new("peer-issuer")
+				objects = append(objects, peer)
+			}
+			setReviews := 0
+			apiClient := fakeclient.NewClientBuilder().WithScheme(policyapi.GlobalScheme).WithObjects(objects...).
+				WithInterceptorFuncs(interceptor.Funcs{Create: func(_ context.Context, _ client.WithWatch, object client.Object, _ ...client.CreateOption) error {
+					review := object.(*authzv1.SubjectAccessReview)
+					attributes := review.Spec.ResourceAttributes
+					if attributes.Resource == "certificaterequestpolicysets" {
+						setReviews++
+						review.Status.Allowed = !test.denySetUse
+					} else {
+						review.Status.Allowed = !(test.denyPolicyUse && attributes.Name == member.Name)
+					}
+					return nil
+				}}).Build()
+			evaluator := fake.NewFakeEvaluator().WithEvaluate(func(_ context.Context, policy *policyapi.CertificateRequestPolicy, _ *cmapi.CertificateRequest) (approver.EvaluationResponse, error) {
+				if policy.Name == member.Name || test.independentApproval {
+					return approver.EvaluationResponse{Result: approver.ResultNotDenied}, nil
+				}
+				return approver.EvaluationResponse{Result: approver.ResultDenied}, nil
+			})
+			response, err := New(apiClient, []approver.Evaluator{evaluator}, true).Review(t.Context(), &cmapi.CertificateRequest{
+				ObjectMeta: metav1.ObjectMeta{Name: "request", Namespace: "tenant"},
+				Spec:       cmapi.CertificateRequestSpec{Username: "requester", IssuerRef: test.issuer},
+			})
+			require.NoError(t, err)
+			assert.Equal(t, test.result, response.Result, response.Message)
+			assert.Equal(t, test.setReviews, setReviews)
+		})
+	}
+}
+
 func TestReviewPolicyReadiness(t *testing.T) {
 	for _, enabled := range []bool{false, true} {
 		t.Run(fmt.Sprintf("policySets=%t", enabled), func(t *testing.T) {
@@ -386,7 +556,7 @@ func BenchmarkReviewPolicySets(b *testing.B) {
 				objects = append(objects,
 					&policyapi.CertificateRequestPolicySet{ObjectMeta: metav1.ObjectMeta{Name: name}, Spec: policyapi.CertificateRequestPolicySetSpec{
 						Policies: []policyapi.CertificateRequestPolicyReference{{Name: name}},
-						Selector: &policyapi.CertificateRequestPolicySelector{IssuerRef: &policyapi.CertificateRequestPolicySelectorIssuerRef{}},
+						Selector: &policyapi.CertificateRequestPolicySetSelector{IssuerRef: &policyapi.CertificateRequestPolicySelectorIssuerRef{}},
 					}},
 					&policyapi.CertificateRequestPolicy{ObjectMeta: metav1.ObjectMeta{Name: name, Generation: 1}, Spec: policyapi.CertificateRequestPolicySpec{
 						PolicySetRef: &policyapi.CertificateRequestPolicySetReference{Name: name},

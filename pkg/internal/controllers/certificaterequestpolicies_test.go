@@ -87,7 +87,7 @@ func TestPolicyReadinessStatusPreconditions(t *testing.T) {
 				ObjectMeta: metav1.ObjectMeta{Name: "services"},
 				Spec: policyapi.CertificateRequestPolicySetSpec{
 					Policies: []policyapi.CertificateRequestPolicyReference{{Name: current.Name}},
-					Selector: &policyapi.CertificateRequestPolicySelector{IssuerRef: &policyapi.CertificateRequestPolicySelectorIssuerRef{}},
+					Selector: &policyapi.CertificateRequestPolicySetSelector{IssuerRef: &policyapi.CertificateRequestPolicySelectorIssuerRef{}},
 				},
 			}
 			if change != "unchanged" {
@@ -121,7 +121,7 @@ func TestPolicySetReadinessStatusPreconditions(t *testing.T) {
 				ObjectMeta: metav1.ObjectMeta{Name: "readiness-" + change},
 				Spec: policyapi.CertificateRequestPolicySetSpec{
 					Policies: []policyapi.CertificateRequestPolicyReference{{Name: "member"}},
-					Selector: &policyapi.CertificateRequestPolicySelector{IssuerRef: &policyapi.CertificateRequestPolicySelectorIssuerRef{}},
+					Selector: &policyapi.CertificateRequestPolicySetSelector{IssuerRef: &policyapi.CertificateRequestPolicySelectorIssuerRef{}},
 				},
 			}
 			require.NoError(t, environment.AdminClient.Create(t.Context(), original))

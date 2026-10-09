@@ -17,7 +17,7 @@ func PolicySetReadiness(policySet *policyapi.CertificateRequestPolicySet, polici
 	if !policySet.DeletionTimestamp.IsZero() {
 		return metav1.ConditionFalse, "Deleting", "The set is being deleted"
 	}
-	if errors := ValidatePolicySelector(policySet.Spec.Selector, field.NewPath("spec", "selector")); len(errors) > 0 {
+	if errors := ValidatePolicySetSelector(policySet.Spec.Selector, field.NewPath("spec", "selector")); len(errors) > 0 {
 		return metav1.ConditionFalse, "InvalidSelector", errors.ToAggregate().Error()
 	}
 	seen := make(map[string]struct{}, len(policySet.Spec.Policies))
@@ -52,13 +52,37 @@ func PolicySetReadiness(policySet *policyapi.CertificateRequestPolicySet, polici
 
 // ValidatePolicySelector checks the shared issuer and namespace selector contract.
 func ValidatePolicySelector(selector *policyapi.CertificateRequestPolicySelector, path *field.Path) field.ErrorList {
-	var errors field.ErrorList
 	if selector == nil || (selector.IssuerRef == nil && selector.Namespace == nil) {
-		return append(errors, field.Required(path, "one of issuerRef or namespace must be defined, hint: `{}` on either matches everything"))
+		return field.ErrorList{field.Required(path, "one of issuerRef or namespace must be defined, hint: `{}` on either matches everything")}
 	}
-	if namespace := selector.Namespace; namespace != nil && len(namespace.MatchLabels) > 0 {
+	return validateNamespaceSelector(selector.Namespace, path.Child("namespace"))
+}
+
+// ValidatePolicySetSelector checks issuer alternatives and namespace scoping.
+func ValidatePolicySetSelector(selector *policyapi.CertificateRequestPolicySetSelector, path *field.Path) field.ErrorList {
+	if selector == nil || (selector.IssuerRef == nil && selector.IssuerRefs == nil && selector.Namespace == nil) {
+		return field.ErrorList{field.Required(path, "one of issuerRef, issuerRefs, or namespace must be defined")}
+	}
+	errors := validateNamespaceSelector(selector.Namespace, path.Child("namespace"))
+	if selector.IssuerRefs != nil {
+		if selector.IssuerRef != nil {
+			errors = append(errors, field.Forbidden(path.Child("issuerRefs"), "issuerRef and issuerRefs are mutually exclusive"))
+		}
+		if len(selector.IssuerRefs) == 0 {
+			errors = append(errors, field.Invalid(path.Child("issuerRefs"), selector.IssuerRefs, "must contain at least one issuer pattern"))
+		}
+		if len(selector.IssuerRefs) > 64 {
+			errors = append(errors, field.TooMany(path.Child("issuerRefs"), len(selector.IssuerRefs), 64))
+		}
+	}
+	return errors
+}
+
+func validateNamespaceSelector(namespace *policyapi.CertificateRequestPolicySelectorNamespace, path *field.Path) field.ErrorList {
+	var errors field.ErrorList
+	if namespace != nil && len(namespace.MatchLabels) > 0 {
 		if _, err := metav1.LabelSelectorAsSelector(&metav1.LabelSelector{MatchLabels: namespace.MatchLabels}); err != nil {
-			errors = append(errors, field.Invalid(path.Child("namespace", "matchLabels"), namespace.MatchLabels, err.Error()))
+			errors = append(errors, field.Invalid(path.Child("matchLabels"), namespace.MatchLabels, err.Error()))
 		}
 	}
 	return errors

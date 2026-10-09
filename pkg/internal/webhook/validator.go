@@ -130,7 +130,7 @@ func (validator *policySetValidator) ValidateCreate(_ context.Context, policySet
 	if !validator.enabled {
 		return nil, field.Forbidden(field.NewPath("spec"), "policy sets are disabled")
 	}
-	return nil, util.ValidatePolicySelector(policySet.Spec.Selector, field.NewPath("spec", "selector")).ToAggregate()
+	return nil, util.ValidatePolicySetSelector(policySet.Spec.Selector, field.NewPath("spec", "selector")).ToAggregate()
 }
 
 func (validator *policySetValidator) ValidateUpdate(ctx context.Context, oldSet, newSet *policyapi.CertificateRequestPolicySet) (admission.Warnings, error) {

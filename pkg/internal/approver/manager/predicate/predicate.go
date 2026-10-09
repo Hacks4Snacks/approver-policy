@@ -58,7 +58,19 @@ func Ready(_ context.Context, _ *cmapi.CertificateRequest, policies []policyapi.
 // "*". Empty selector is equivalent to "*" and will match on anything.
 func SelectorIssuerRef(_ context.Context, cr *cmapi.CertificateRequest, policies []policyapi.CertificateRequestPolicy) ([]policyapi.CertificateRequestPolicy, error) {
 	var matchingPolicies []policyapi.CertificateRequestPolicy
+	for _, policy := range policies {
+		if MatchesIssuerRef(cr, policy.Spec.Selector.IssuerRef) {
+			matchingPolicies = append(matchingPolicies, policy)
+		}
+	}
+	return matchingPolicies, nil
+}
 
+// MatchesIssuerRef matches one issuer pattern using cert-manager request defaults.
+func MatchesIssuerRef(cr *cmapi.CertificateRequest, selector *policyapi.CertificateRequestPolicySelectorIssuerRef) bool {
+	if selector == nil {
+		return true
+	}
 	// cert-manager applies controller defaults for issuer Kind and Group,
 	// which means that default values are NOT materialized in resources
 	// if omitted.
@@ -68,28 +80,13 @@ func SelectorIssuerRef(_ context.Context, cr *cmapi.CertificateRequest, policies
 	issGroup := nonEmptyOrDefault(cr.Spec.IssuerRef.Group, "cert-manager.io")
 	issName := cr.Spec.IssuerRef.Name
 
-	for _, policy := range policies {
-		issRefSel := policy.Spec.Selector.IssuerRef
-		// If the issuerRef selector is nil, we match the policy and continue
-		// early.
-		if issRefSel == nil {
-			matchingPolicies = append(matchingPolicies, policy)
-			continue
-		}
-
-		if issRefSel.Name != nil && !util.WildcardMatches(*issRefSel.Name, issName) {
-			continue
-		}
-		if issRefSel.Kind != nil && !util.WildcardMatches(*issRefSel.Kind, issKind) {
-			continue
-		}
-		if issRefSel.Group != nil && !util.WildcardMatches(*issRefSel.Group, issGroup) {
-			continue
-		}
-		matchingPolicies = append(matchingPolicies, policy)
+	if selector.Name != nil && !util.WildcardMatches(*selector.Name, issName) {
+		return false
 	}
-
-	return matchingPolicies, nil
+	if selector.Kind != nil && !util.WildcardMatches(*selector.Kind, issKind) {
+		return false
+	}
+	return selector.Group == nil || util.WildcardMatches(*selector.Group, issGroup)
 }
 
 // SelectorNamespace is a Predicate that returns the subset of given policies
