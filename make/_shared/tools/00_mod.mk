@@ -32,7 +32,7 @@ export GOVENDOR_DIR ?= $(default_shared_dir)/go_vendor
 
 # https://go.dev/dl/
 # renovate: datasource=golang-version packageName=go
-VENDORED_GO_VERSION := 1.27.1
+VENDORED_GO_VERSION := 1.27.2
 
 $(bin_dir)/tools $(DOWNLOAD_DIR)/tools:
 	@mkdir -p $@
@@ -73,7 +73,7 @@ tools :=
 tools += helm=v4.3.0
 # https://github.com/helm-unittest/helm-unittest/releases
 # renovate: datasource=github-releases packageName=helm-unittest/helm-unittest
-tools += helm-unittest=v1.2.0
+tools += helm-unittest=v1.2.1
 # https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl
 # renovate: datasource=github-releases packageName=kubernetes/kubernetes
 tools += kubectl=v1.37.1
@@ -82,7 +82,7 @@ tools += kubectl=v1.37.1
 tools += kind=v0.33.0
 # https://www.vaultproject.io/downloads
 # renovate: datasource=github-releases packageName=hashicorp/vault
-tools += vault=v2.1.1
+tools += vault=v2.1.2
 # https://github.com/Azure/azure-workload-identity/releases
 # renovate: datasource=github-releases packageName=Azure/azure-workload-identity
 tools += azwi=v1.6.3
@@ -117,7 +117,7 @@ tools += istioctl=1.31.1
 tools += controller-gen=v0.22.0
 # https://pkg.go.dev/golang.org/x/tools/cmd/goimports?tab=versions
 # renovate: datasource=go packageName=golang.org/x/tools
-tools += goimports=v0.50.0
+tools += goimports=v0.51.0
 # https://pkg.go.dev/github.com/google/go-licenses/v2?tab=versions
 # renovate: datasource=go packageName=github.com/inteon/go-licenses/v2
 tools += go-licenses=v2.0.0-20250821024731-e4be79958780
@@ -126,7 +126,7 @@ tools += go-licenses=v2.0.0-20250821024731-e4be79958780
 tools += gotestsum=v1.13.0
 # https://pkg.go.dev/sigs.k8s.io/kustomize/kustomize/v5?tab=versions
 # renovate: datasource=go packageName=sigs.k8s.io/kustomize/kustomize/v5
-tools += kustomize=v5.8.2
+tools += kustomize=v5.8.3
 # https://pkg.go.dev/github.com/itchyny/gojq?tab=versions
 # renovate: datasource=go packageName=github.com/itchyny/gojq
 tools += gojq=v0.12.19
@@ -163,7 +163,7 @@ tools += klone=v0.3.0
 tools += goreleaser=v2.18.2
 # https://pkg.go.dev/github.com/anchore/syft/cmd/syft?tab=versions
 # renovate: datasource=go packageName=github.com/anchore/syft
-tools += syft=v1.54.0
+tools += syft=v1.54.1
 # https://github.com/cert-manager/helm-tool/releases
 # renovate: datasource=github-releases packageName=cert-manager/helm-tool
 tools += helm-tool=v0.6.0
@@ -225,7 +225,7 @@ tools += defaulter-gen=$(K8S_CODEGEN_VERSION)
 tools += conversion-gen=$(K8S_CODEGEN_VERSION)
 # https://github.com/kubernetes/kube-openapi
 # renovate: datasource=go packageName=k8s.io/kube-openapi
-tools += openapi-gen=v0.0.0-20261001230523-97fa35140926
+tools += openapi-gen=v0.0.0-20261007072838-e2e80c32a35f
 
 # https://raw.githubusercontent.com/kubernetes-sigs/controller-tools/master/envtest-releases.yaml
 # FIXME: Find a way to configure Renovate to suggest upgrades
@@ -527,10 +527,10 @@ $(foreach tool_name,$(tool_names),$(eval $(call tool_link_defs,$(tool_name))))
 # File downloads #
 ##################
 
-go_linux_amd64_SHA256SUM=63d339f0da5ab53635a56f2490a7984dfe12dfcff22ad749f63edaf590168445
-go_linux_arm64_SHA256SUM=3450b45a3f9ee8568792736a5c5e70a1f2e9b36c35a8f74958c03e51d7d92bec
-go_darwin_amd64_SHA256SUM=8f8f52c6649542cf027bbc9b9c68d1ec042f9f34808a40413f0b8b3f66f3caa4
-go_darwin_arm64_SHA256SUM=ee215d57e0ec269c60cc9ceca68e6bda321ba9ee5afe24f4b0988703c2d87d12
+go_linux_amd64_SHA256SUM=ecbadb99091a3f46e31f5f934b068b1864eafa7995211b39eaddf76996045fe5
+go_linux_arm64_SHA256SUM=94f3e30b8e374bc285e7dadc11e0865726b9bc6e85b841ccceaabc0214c6b7c8
+go_darwin_amd64_SHA256SUM=587b59182488b23aa6e5fc25110405a3e0e5b38ed2f5b2f46ed13c32aee356fe
+go_darwin_arm64_SHA256SUM=76812b213b1b2302c978d28fa52fa92d541704b9e7d9d5db8002c50e4018c4c5
 
 .PRECIOUS: $(DOWNLOAD_DIR)/tools/go@$(VENDORED_GO_VERSION)_$(HOST_OS)_$(HOST_ARCH).tar.gz
 $(DOWNLOAD_DIR)/tools/go@$(VENDORED_GO_VERSION)_$(HOST_OS)_$(HOST_ARCH).tar.gz: | $(DOWNLOAD_DIR)/tools
@@ -552,10 +552,10 @@ $(DOWNLOAD_DIR)/tools/helm@$(HELM_VERSION)_$(HOST_OS)_$(HOST_ARCH): | $(DOWNLOAD
 		chmod +x $(outfile); \
 		rm -f $(outfile).tar.gz
 
-helm-unittest_linux_amd64_SHA256SUM=115c690234847d316f0a814beb9cceaf9c21bb407173179c0e82076bdce1efc0
-helm-unittest_linux_arm64_SHA256SUM=4a5cb6b35773734fd438c841e2553f3dbed2206cc027e94e4b093a43652cf888
-helm-unittest_darwin_amd64_SHA256SUM=c19e8f62ef7333c7a39c37ce3a732dc4e1c78a168856176796c49e39c2168c8c
-helm-unittest_darwin_arm64_SHA256SUM=f9d1ea0a25455b8aa387865486dd9f49355b600ac875ac504c662a19d18fe09c
+helm-unittest_linux_amd64_SHA256SUM=48e86ecc1467b009630e5954375e5d8494139f73b466df5fe8c04fa45b634939
+helm-unittest_linux_arm64_SHA256SUM=c66062713cd3cbb1a80d7098bd1d4a48db8438f56b43fb6377df65447f93f8de
+helm-unittest_darwin_amd64_SHA256SUM=3e57daace5249d8dafd5fd2f6fbebf773c7e53a56e904db1f903031866853158
+helm-unittest_darwin_arm64_SHA256SUM=38ec0475b9206ba62454ab0f51a7fecbb9bfe103e9a7a1426f3b799d4f432ab2
 
 # helm-unittest uses "macos" instead of "darwin" in release filenames
 helm_unittest_os := $(HOST_OS)
@@ -596,10 +596,10 @@ $(DOWNLOAD_DIR)/tools/kind@$(KIND_VERSION)_$(HOST_OS)_$(HOST_ARCH): | $(DOWNLOAD
 		$(checkhash_script) $(outfile) $(kind_$(HOST_OS)_$(HOST_ARCH)_SHA256SUM); \
 		chmod +x $(outfile)
 
-vault_linux_amd64_SHA256SUM=8aa90f9cea46f541fc7baa3d0ec692fc06afde9a248cc1f2dcac46a567c6f56b
-vault_linux_arm64_SHA256SUM=c2c74e111ffbc83b3d29c6f0c0215a5e53d738c9fad045f7797bcdcde3156067
-vault_darwin_amd64_SHA256SUM=1310ccba498a08fa9bfe09c698f54f38b6d9c2ae45bae08cf91f02bc10d295b6
-vault_darwin_arm64_SHA256SUM=95d100472b726d889ee380c9335191abdf5b3e6f3108cde48f4f962bfea4f009
+vault_linux_amd64_SHA256SUM=873bbdac35ca4b0c3e2886c41991ca1272fc452826208d5499f32d12cd2e76e1
+vault_linux_arm64_SHA256SUM=57c0c4d2f8c1694b18f26f922eca40e472355934dca2f3bd63f415042d1898ed
+vault_darwin_amd64_SHA256SUM=8a057a4e005113223f2d479a13ff6d9a781e9145db0327270c94d3ff14ed2af7
+vault_darwin_arm64_SHA256SUM=bdd5a4b5d4b5afe7a79ce629e41ddca6480068df8fe1d74665e681b27abd8001
 
 .PRECIOUS: $(DOWNLOAD_DIR)/tools/vault@$(VAULT_VERSION)_$(HOST_OS)_$(HOST_ARCH)
 $(DOWNLOAD_DIR)/tools/vault@$(VAULT_VERSION)_$(HOST_OS)_$(HOST_ARCH): | $(DOWNLOAD_DIR)/tools
